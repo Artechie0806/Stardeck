@@ -307,17 +307,24 @@ class SourceService:
 
     def to_out(self, rec: SourceRecord) -> SourceOut:
         defs = self.effective_definitions(rec)
+        all_tables = self.tables(rec)
+        columns_of = {t.name: {c.name for c in t.columns} for t in all_tables}
+        base_of = {t["name"]: t["base"] for t in rec.transforms or []}
         tables = []
-        for t in self.tables(rec):
+        for t in all_tables:
             tdef = defs.tables.get(t.name)
+            # Columns a prepared table passes through from its base are flagged on the base only:
+            # explaining the original covers both, and one unclear column isn't counted twice.
+            passed = columns_of.get(base_of.get(t.name, ""), set()) if t.prepared else set()
             cols = []
             for c in t.columns:
                 cdef = defs.column(t.name, c.name)
+                explained = bool(cdef and (cdef.description or cdef.values or cdef.hidden))
                 cols.append(ColumnOut(
                     name=c.name, type=c.type, samples=c.samples,
                     definition=cdef.model_dump(exclude_defaults=True, exclude={"source"}) if cdef else None,
                     source=cdef.source if cdef else None,
-                    flag=flag_column(c.name, bool(cdef and (cdef.description or cdef.values or cdef.hidden))),
+                    flag=None if c.name in passed else flag_column(c.name, explained),
                 ))
             tables.append(TableOut(
                 name=t.name, row_count=t.row_count, description=tdef.description if tdef else None,

@@ -12,6 +12,6 @@ export function ConfirmDelete({ label, title, onConfirm }: { label: string; titl
   return armed ? (
     <button className="btn danger small" onClick={(e) => { e.preventDefault(); onConfirm() }}>{label}</button>
   ) : (
-    <button className="icon-btn" title={title} onClick={(e) => { e.preventDefault(); setArmed(true) }}><Trash2 size={15} /></button>
+    <button className="icon-btn" title={title} aria-label={title} onClick={(e) => { e.preventDefault(); setArmed(true) }}><Trash2 size={15} /></button>
   )
 }

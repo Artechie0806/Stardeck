@@ -3,6 +3,7 @@ import { Link, useParams, useSearchParams } from 'react-router'
 import { Printer } from 'lucide-react'
 import { api, type Dashboard, type DatePreset } from '../api'
 import { DashboardGrid } from '../components/DashboardGrid'
+import { Logo } from '../components/Logo'
 import { FilterBar } from '../components/FilterBar'
 import { PRESETS } from '../lib/dates'
 
@@ -42,15 +43,27 @@ export function ViewPage() {
     return () => clearTimeout(t)
   }, [autoPrint, loading, dashboard])
 
-  if (error) return <div className="page"><p className="error">{error}</p></div>
-  if (!dashboard || !preset) return <div className="page"><p className="muted">Running queries…</p></div>
+  if (error) {
+    return (
+      <div className="page"><section className="empty"><h2>This dashboard couldn’t be opened</h2><p>{error}</p>
+        <Link to="/" className="btn primary">Go to Stardeck</Link></section></div>
+    )
+  }
+  if (!dashboard || !preset) {
+    return (
+      <div className="page view-page" aria-busy="true">
+        <div className="skeleton-line wide" /><div className="skeleton-line" />
+        <div className="skeleton-grid">{[0, 1, 2, 3].map((i) => <div key={i} className={`widget skeleton s${i}`} />)}</div>
+      </div>
+    )
+  }
 
   const label = PRESETS.find((p) => p.value === preset)?.label
   return (
     <div className="page view-page">
       <div className="page-head">
         <div>
-          <p className="crumb">✦ Stardeck · <Link to={`/d/${id}`}>Open editor</Link></p>
+          <p className="crumb view-brand"><Logo size={20} /> <Link to={`/d/${id}`} className="btn ghost small no-print editor-link">Open in editor</Link></p>
           <h1>{dashboard.name}</h1>
           <p className="muted">{dashboard.description}</p>
           <p className="print-only muted">Date range: {label} · Printed {printedAt}</p>

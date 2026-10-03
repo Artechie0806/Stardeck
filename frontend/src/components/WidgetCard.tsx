@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import {
-  CalendarOff, Check, Code, Copy, Download, Ellipsis, LoaderCircle, Pencil, Play, Table2, Trash2, X,
+  CalendarOff, Check, CircleAlert, Code, Copy, Download, Ellipsis, LoaderCircle, Pencil, Play, Sparkles, Table2, Trash2, X,
 } from 'lucide-react'
 import type { ChartType, DatePreset, QueryResult, Stack, Widget } from '../api/types'
 import { CHART_OPTIONS, deriveRoles, fitProblem, SINGLE_OPTIONS } from '../lib/chartFit'
@@ -8,6 +8,7 @@ import { copyText } from '../lib/browser'
 import { downloadCsv } from '../lib/csv'
 import { presetRanges } from '../lib/dates'
 import { DataTable } from './DataTable'
+import { Popover } from './Popover'
 import { WidgetVisual } from './WidgetVisual'
 
 interface Props {
@@ -21,24 +22,17 @@ interface Props {
   /** Run SQL with the dashboard's current filters, without saving. */
   onRunSql: (sql: string) => Promise<QueryResult>
   onSaveSql: (sql: string) => Promise<void>
+  /** Hand a broken widget to the assistant (editor only). */
+  onAsk?: (text: string) => void
 }
 
-export function WidgetCard({ widget, preset, editing, readOnly = false, onRemove, onChangeType, onRunSql, onSaveSql }: Props) {
+export function WidgetCard({ widget, preset, editing, readOnly = false, onRemove, onChangeType, onRunSql, onSaveSql, onAsk }: Props) {
   const [view, setView] = useState<'chart' | 'data' | 'sql'>('chart')
   const [menuOpen, setMenuOpen] = useState(false)
-  const menuRef = useRef<HTMLDivElement>(null)
+  const moreRef = useRef<HTMLButtonElement>(null)
   const { spec, result } = widget
   const isKpi = spec.type === 'kpi'
   const unfiltered = !widget.dateFilter && preset !== 'all'
-
-  useEffect(() => {
-    if (!menuOpen) return
-    const close = (e: MouseEvent) => {
-      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false)
-    }
-    document.addEventListener('mousedown', close)
-    return () => document.removeEventListener('mousedown', close)
-  }, [menuOpen])
 
   return (
     <article className={`widget ${isKpi ? 'widget-kpi' : ''}`}>
@@ -55,13 +49,12 @@ export function WidgetCard({ widget, preset, editing, readOnly = false, onRemove
             title={view === 'sql' ? 'Hide SQL' : 'View SQL'} onClick={() => setView(view === 'sql' ? 'chart' : 'sql')}>
             <Code size={15} />
           </button>
-          <div className="menu-anchor" ref={menuRef}>
-            <button className="icon-btn" title="More" aria-haspopup="menu" aria-expanded={menuOpen}
-              onClick={() => setMenuOpen((o) => !o)}>
-              <Ellipsis size={15} />
-            </button>
-            {menuOpen && (
-              <div className="menu" role="menu">
+          <button ref={moreRef} className="icon-btn" title="More" aria-label={`More actions for ${widget.title}`}
+            aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => setMenuOpen((o) => !o)}>
+            <Ellipsis size={15} />
+          </button>
+          {menuOpen && (
+              <Popover anchor={moreRef} onClose={() => setMenuOpen(false)} label="Widget actions">
                 {result && (
                   <button role="menuitem" className="menu-item" onClick={() => { downloadCsv(result, widget.title); setMenuOpen(false) }}>
                     <Download size={15} /> Download CSV
@@ -72,15 +65,14 @@ export function WidgetCard({ widget, preset, editing, readOnly = false, onRemove
                 )}
                 {!readOnly && (
                   <>
-                    {result && <div className="menu-sep" />}
+                    <div className="menu-sep" />
                     <button role="menuitem" className="menu-item danger" onClick={() => { setMenuOpen(false); onRemove() }}>
                       <Trash2 size={15} /> Remove from dashboard
                     </button>
                   </>
                 )}
-              </div>
-            )}
-          </div>
+              </Popover>
+          )}
         </div>
       </header>
 
@@ -89,9 +81,19 @@ export function WidgetCard({ widget, preset, editing, readOnly = false, onRemove
           <SqlPanel widget={widget} preset={preset} readOnly={readOnly} onClose={() => setView('chart')} onRun={onRunSql}
             onSave={async (sql) => { await onSaveSql(sql); setView('chart') }} />
         ) : widget.error ? (
-          <div className="widget-error">
-            <p>This widget's query failed: {widget.error}</p>
-            {!readOnly && <button className="btn ghost small" onClick={() => setView('sql')}><Pencil size={13} aria-hidden /> Fix SQL</button>}
+          <div className="widget-error" role="alert">
+            <p className="widget-error-title"><CircleAlert size={16} aria-hidden /> This chart couldn’t load</p>
+            <details><summary>What went wrong</summary><p className="mono small">{widget.error}</p></details>
+            {!readOnly && (
+              <div className="widget-error-actions">
+                {onAsk && (
+                  <button className="btn primary small" onClick={() => onAsk(`The "${widget.title}" chart fails with: ${widget.error}. Please fix it.`)}>
+                    <Sparkles size={13} aria-hidden /> Ask the assistant to fix it
+                  </button>
+                )}
+                <button className="btn ghost small" onClick={() => setView('sql')}><Pencil size={13} aria-hidden /> Edit SQL</button>
+              </div>
+            )}
           </div>
         ) : result ? (
           <WidgetVisual spec={spec} result={result} preset={preset} asTable={view === 'data'} dateFiltered={!!widget.dateFilter} />
@@ -133,7 +135,6 @@ function ChartTypeMenu({ widget, onPick }: { widget: Widget; onPick: (t: ChartTy
           })}
         </div>
       ))}
-      <div className="menu-sep" />
     </div>
   )
 }

@@ -297,3 +297,13 @@ def test_pivot_columns_named_from_code_meanings(client):
     out = preview(client, "customers", [{"op": "pivot", "column": "sgmt", "value_column": "col1", "func": "avg"}])
     assert out["error"] is None, out["error"]
     assert out["columns"][-3:] == ["retail", "wholesale", "corporate"]
+
+
+def test_prepared_table_does_not_reflag_passed_through_columns(client):
+    save = client.put("/api/sources/retail-demo/transforms/orders_lite",
+                      json={"base": "orders", "steps": [{"op": "keep_top", "n": 10}]})
+    assert save.status_code == 200, save.text
+    tables = {t["name"]: t for t in client.get("/api/sources/retail-demo").json()["tables"]}
+    flag = lambda t, c: next(x["flag"] for x in tables[t]["columns"] if x["name"] == c)
+    assert flag("orders", "sts") is not None      # the original is still flagged...
+    assert flag("orders_lite", "sts") is None     # ...but not counted again on the prepared table

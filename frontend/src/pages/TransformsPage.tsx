@@ -39,7 +39,8 @@ export function TransformsPage() {
       <div className="page-head"><h1>Prepared tables</h1></div>
       <p className="muted">
         Clean and reshape data without touching your database: filter, rename, fix types, add calculated columns,
-        merge tables and summarize, step by step like Power Query. The result works like a table everywhere in Stardeck.
+        merge tables and summarize, one step at a time. The result works like any other table in Stardeck, and your
+        original data is never changed.
       </p>
       {error && <p className="error banner" role="alert">{error}</p>}
 
@@ -61,12 +62,12 @@ export function TransformsPage() {
       {items?.length === 0 && <p className="muted">No prepared tables yet.</p>}
       <div className="card-grid">
         {items?.map((t) => (
-          <Link key={t.name} to={`/sources/${id}/transforms/${t.name}`} className="dash-card">
+          <div key={t.name} className="dash-card linked">
             <div className="card-top">
-              <Wand2 size={20} className="dash-card-icon" aria-hidden />
-              <ConfirmDelete label="Delete prepared table?" title="Delete" onConfirm={() => remove(t.name)} />
+              <span className="icon-tile"><Wand2 size={19} aria-hidden /></span>
+              <ConfirmDelete label="Delete prepared table?" title="Delete prepared table" onConfirm={() => remove(t.name)} />
             </div>
-            <h2><code>{t.name}</code></h2>
+            <h2><Link to={`/sources/${id}/transforms/${t.name}`} className="card-link"><code>{t.name}</code></Link></h2>
             <p>From <code>{t.base}</code> · {t.steps.length} step{t.steps.length === 1 ? '' : 's'}</p>
             {t.labels.slice(0, 3).map((l, i) => <p key={i} className="small muted">{i + 1}. {l}</p>)}
             {t.error && <p className="error small">{t.error}</p>}
@@ -75,7 +76,7 @@ export function TransformsPage() {
               <span>{t.columns.length} columns</span>
               {t.usedBy.length > 0 && <span>Used by {t.usedBy.length} widget{t.usedBy.length > 1 ? 's' : ''}</span>}
             </div>
-          </Link>
+          </div>
         ))}
       </div>
     </div>

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router'
 import {
-  Check, CircleAlert, Download, EyeOff, Lightbulb, LoaderCircle, Pencil, Plus, Sparkles, Trash2, Upload, X,
+  Check, ChevronRight, CircleAlert, Download, EyeOff, Lightbulb, LoaderCircle, Pencil, Plus, Search, Sparkles, Trash2, Upload, X,
 } from 'lucide-react'
 import { api, type ColumnDefinition, type ColumnInfo, type DataSource, type GlossaryTerm } from '../api'
 
@@ -14,6 +14,9 @@ export function DefinitionsPage() {
   const [context, setContext] = useState('')
   const [notice, setNotice] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
   const [suggesting, setSuggesting] = useState(false)
+  // Tables the user opened/closed; others follow the default (open when something needs attention).
+  const [toggled, setToggled] = useState<Record<string, boolean>>({})
+  const [query, setQuery] = useState('')
   const importRef = useRef<HTMLInputElement>(null)
 
   const apply = useCallback((s: DataSource) => {
@@ -64,6 +67,7 @@ export function DefinitionsPage() {
   }
 
   const jumpTo = (table: string, column: string) => {
+    setToggled((o) => ({ ...o, [table]: true }))
     setEditing(`${table}.${column}`)
     requestAnimationFrame(() =>
       document.getElementById(`col-${table}-${column}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }))
@@ -134,18 +138,46 @@ export function DefinitionsPage() {
         <GlossaryEditor key={JSON.stringify(source.glossary)} terms={source.glossary} onSave={(g) => run(() => api.saveGlossary(id, g), 'Business terms saved.')} />
       </section>
 
-      {source.tables.map((t) => (
-        <section key={t.name} className="panel table-defs">
+      <div className="defs-toolbar">
+        <label className="search-box">
+          <Search size={15} aria-hidden />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Find a column…" aria-label="Find a column" />
+          {query && <button className="icon-btn" onClick={() => setQuery('')} aria-label="Clear search"><X size={14} /></button>}
+        </label>
+        <button className="btn text small" onClick={() => setToggled(Object.fromEntries(source.tables.map((t) => [t.name, true])))}>Expand all</button>
+        <button className="btn text small" onClick={() => setToggled(Object.fromEntries(source.tables.map((t) => [t.name, false])))}>Collapse all</button>
+      </div>
+
+      {source.tables.map((t) => {
+        const q = query.trim().toLowerCase()
+        const needs = t.columns.filter((c) => c.flag || c.source === 'ai_suggested')
+        const explained = t.columns.filter((c) => c.definition?.description).length
+        const shown = q ? t.columns.filter((c) => c.name.toLowerCase().includes(q) || (c.definition?.description ?? '').toLowerCase().includes(q)) : t.columns
+        if (q && !shown.length) return null
+        // Columns that need attention first, then the rest in table order.
+        const ordered = [...shown].sort((a, b) => Number(!!(b.flag || b.source === 'ai_suggested')) - Number(!!(a.flag || a.source === 'ai_suggested')))
+        const open = q ? true : toggled[t.name] ?? (needs.length > 0 || source.tables.length <= 2)
+        return (
+        <section key={t.name} className={`panel table-defs ${open ? 'open' : 'closed'}`}>
           <div className="table-defs-head">
-            <h2><code>{t.name}</code>{t.isView && <span className="badge">view</span>}
-              {t.prepared && <Link to={`/sources/${id}/transforms/${t.name}`} className="badge src-ai_suggested">prepared table</Link>}</h2>
-            {t.rowCount !== null && <span className="muted">{t.rowCount.toLocaleString('en-IN')} rows</span>}
+            <button className="table-toggle" aria-expanded={open} onClick={() => setToggled((o) => ({ ...o, [t.name]: !open }))}>
+              <ChevronRight size={16} className="chev" aria-hidden />
+              <h2><code>{t.name}</code></h2>
+            </button>
+            {t.isView && <span className="badge">view</span>}
+            {t.prepared && <Link to={`/sources/${id}/transforms/${t.name}`} className="badge src-ai_suggested">prepared table</Link>}
+            <span className="table-defs-meta">
+              {needs.length > 0 && <span className="badge warn">{needs.length} to explain</span>}
+              <span className="muted small">{explained} of {t.columns.length} explained</span>
+              {t.rowCount !== null && <span className="muted small">· {t.rowCount.toLocaleString('en-IN')} rows</span>}
+            </span>
           </div>
+          {open && <>
           <TableDescription key={t.description ?? ''} value={t.description ?? ''}
             onSave={(d) => run(() => api.saveTableDescription(id, t.name, d))} />
           {t.error && <p className="error small"><CircleAlert size={13} aria-hidden /> Couldn't read this table: {t.error}</p>}
           <div className="col-list">
-            {t.columns.map((c) => {
+            {ordered.map((c) => {
               const key = `${t.name}.${c.name}`
               return editing === key ? (
                 <ColumnEditor key={key} table={t.name} col={c} onCancel={() => setEditing(null)}
@@ -157,8 +189,10 @@ export function DefinitionsPage() {
               )
             })}
           </div>
+          </>}
         </section>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -184,7 +218,7 @@ function GlossaryEditor({ terms, onSave }: { terms: GlossaryTerm[]; onSave: (g: 
         {rows.map((g, i) => (
           <div key={i} className="glossary-row">
             <input aria-label="Term" value={g.term} placeholder="Term" onChange={(e) => set(i, { term: e.target.value })} />
-            <input aria-label="Definition" value={g.definition} placeholder="Definition"
+            <textarea rows={1} className="grow" aria-label="Definition" value={g.definition} placeholder="Definition"
               onChange={(e) => set(i, { definition: e.target.value })} />
             <button className="icon-btn" title="Remove term" onClick={() => setRows(rows.filter((_, j) => j !== i))}>
               <Trash2 size={14} />
@@ -271,8 +305,8 @@ function ColumnEditor({ table, col, onSave, onCancel }: {
       <p className="muted small">Sample values: {col.samples.join(', ') || '–'}</p>
       <div className="form-grid">
         <label className="field wide"><span>What does it mean?</span>
-          <input autoFocus value={description} onChange={(e) => setDescription(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && submit()} placeholder="e.g. Customer age" /></label>
+          <textarea autoFocus rows={1} className="grow" value={description} onChange={(e) => setDescription(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit() } }} placeholder="e.g. Customer age" /></label>
         <label className="field"><span>Unit <em>(optional)</em></span>
           <input value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="years, INR, paise…" /></label>
       </div>

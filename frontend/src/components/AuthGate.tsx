@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { LoaderCircle, Lock } from 'lucide-react'
 import { api, UNAUTHORIZED_EVENT } from '../api'
 import { AuthContext } from '../lib/authContext'
+import { Logo, LogoMark } from './Logo'
 
 /** Shows a sign-in screen when the server has STARDECK_PASSWORD set and there's no session. */
 export function AuthGate({ children }: { children: ReactNode }) {
@@ -22,7 +23,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     setState('out')
   }
 
-  if (state === 'checking') return null
+  if (state === 'checking') return <div className="app-loading"><LogoMark size={56} animate label="Loading Stardeck" /></div>
   if (state === 'out') return <SignIn onDone={() => setState('in')} />
   return <AuthContext.Provider value={{ required, signOut }}>{children}</AuthContext.Provider>
 }
@@ -49,7 +50,7 @@ function SignIn({ onDone }: { onDone: () => void }) {
   return (
     <main className="signin">
       <form className="panel signin-card" onSubmit={submit}>
-        <div className="brand">✦ Stardeck</div>
+        <div className="brand"><Logo size={30} animate /></div>
         <h1><Lock size={18} aria-hidden /> Sign in</h1>
         <p className="muted">This Stardeck is password protected.</p>
         <label className="field"><span>Password</span>

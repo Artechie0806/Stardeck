@@ -30,7 +30,7 @@ export function readChartColors(): ChartColors {
   const css = getComputedStyle(document.documentElement)
   const v = (name: string) => css.getPropertyValue(name).trim()
   return {
-    surface: v('--surface'),
+    surface: v('--surface-solid'), // charts need an opaque colour for tooltips and segment gaps
     text: v('--text'),
     textSecondary: v('--text-secondary'),
     muted: v('--muted'),

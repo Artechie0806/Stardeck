@@ -10,6 +10,36 @@
   are blank. Native SPLIT_PART on Postgres; a linear multi-pass chain on SQLite and MySQL.
 - **Conditional column** built from a form: "if [column] [operator] [value] then [result]" rules in
   order, results can be a fixed value or another column, plus an "otherwise".
+- **New logo** (the "cut one colour" mark from Stardeck Logo Directions): in the sidebar, sign-in
+  screen, phone header and shared views, with the 1.5s intro animation (skipped for reduced motion).
+  New favicon (adapts to dark mode), home-screen icons and a web app manifest so Stardeck can be
+  added to a phone's home screen, plus light/dark logos in the README. Source files in `frontend/public/brand/`.
+- **New identity: flare pink on black.** Stardeck's signature is a hot coral-pink (`#FF3D7F`), chosen because
+  no analytics or BI tool uses pink. Buttons are pink with black text. Dark mode is true black, not grey,
+  and light mode is clean white. Glass panels float over soft pink glows, and the font is Inter throughout.
+  The logo, favicon, app icons and README logos are all recoloured. Chart colours are unchanged and still pass
+  every check on the new surfaces.
+- **Add data source** is now a guided dialog (a bottom sheet on phones): pick a type (spreadsheets first),
+  then only the fields that type needs. Paste a connection URL to fill the form, show/hide password,
+  and advanced settings tucked away.
+- **Phones**: a bottom tab bar, a slim header, a single "⋯" menu for dashboard actions, a sideways-
+  scrolling date filter, and KPIs two to a row sized to their content. Controls are at least 40px tall.
+- Fixes from a full UI audit:
+  - Widget and column menus are no longer cut off by their cards, see-through, or hidden behind the tab bar.
+  - A 1366px laptop with the assistant open keeps the full dashboard grid.
+  - Long dashboard titles are no longer cut off by the toolbar.
+  - Removing a widget can be undone for a few seconds.
+  - The assistant keeps the conversation when it's closed, and suggests prompts from your own dashboard.
+  - Broken charts explain themselves and can be handed to the assistant.
+  - IDs are shown without thousands separators.
+  - Delete buttons are no longer nested inside links.
+  - Pages show placeholders while they load.
+  - Charts now switch between light and dark instantly. Before, they kept the old theme's colours until a reload.
+  - Picking a date range on a dashboard only changes your view. "Make default" saves it for everyone.
+  - Definitions: tables collapse, open first when they need attention, and list unclear columns first.
+    A "Find a column" search covers every table.
+  - A column a prepared table passes through is flagged on its original table only, so it isn't counted twice.
+  - Deleting a step in the transform editor can be undone.
 - AI step suggestions cover all three; the user's own aggregation word ("average", "count") wins over
   the model's guess, and invented pivot values are ignored.
 

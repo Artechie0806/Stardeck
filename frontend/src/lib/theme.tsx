@@ -13,8 +13,26 @@ function readChoice(): ThemeChoice {
   }
 }
 
+/**
+ * Put the choice on <html> right away. Doing it in an effect was too late: React runs children's effects
+ * first, so charts re-read the colour tokens while the old theme was still applied (fixed only by a reload).
+ */
+function applyChoice(choice: ThemeChoice) {
+  const root = document.documentElement
+  if (choice === 'system') root.removeAttribute('data-theme')
+  else root.setAttribute('data-theme', choice)
+}
+
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [choice, setChoice] = useState<ThemeChoice>(readChoice)
+  const [choice, setChoiceState] = useState<ThemeChoice>(() => {
+    const c = readChoice()
+    applyChoice(c)
+    return c
+  })
+  const setChoice = (c: ThemeChoice) => {
+    applyChoice(c)
+    setChoiceState(c)
+  }
   const [systemDark, setSystemDark] = useState(() => media().matches)
 
   useEffect(() => {
@@ -27,9 +45,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const resolved: Resolved = choice === 'system' ? (systemDark ? 'dark' : 'light') : choice
 
   useEffect(() => {
-    const root = document.documentElement
-    if (choice === 'system') root.removeAttribute('data-theme')
-    else root.setAttribute('data-theme', choice)
     try {
       localStorage.setItem(STORAGE_KEY, choice)
     } catch {

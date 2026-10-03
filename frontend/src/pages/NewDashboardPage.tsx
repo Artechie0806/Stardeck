@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router'
-import { Check, CircleAlert, LoaderCircle, Sparkles } from 'lucide-react'
+import { Link, useNavigate, useSearchParams } from 'react-router'
+import { Check, CircleAlert, Database, LoaderCircle, Sparkles } from 'lucide-react'
 import { api, type DataSource } from '../api'
 
 const GOAL_IDEAS = [
@@ -15,6 +15,7 @@ type Step = { title: string; state: 'pending' | 'done' | 'failed'; reason?: stri
 export function NewDashboardPage() {
   const navigate = useNavigate()
   const [sources, setSources] = useState<DataSource[]>([])
+  const [loaded, setLoaded] = useState(false)
   const [sourceId, setSourceId] = useState('')
   const [goal, setGoal] = useState('')
   const [phase, setPhase] = useState<'form' | 'planning' | 'building' | 'done'>('form')
@@ -23,9 +24,12 @@ export function NewDashboardPage() {
   const [planName, setPlanName] = useState('')
   const [error, setError] = useState<string | null>(null)
 
+  const [params] = useSearchParams()
+  const wanted = params.get('source') // "New dashboard" on a source card preselects it
+
   useEffect(() => {
-    api.listSources().then((s) => { setSources(s); setSourceId(s[0]?.id ?? '') })
-  }, [])
+    api.listSources().then((s) => { setSources(s); setSourceId(s.find((x) => x.id === wanted)?.id ?? s[0]?.id ?? ''); setLoaded(true) })
+  }, [wanted])
 
   const generate = async () => {
     setPhase('planning')
@@ -57,6 +61,15 @@ export function NewDashboardPage() {
       }
     }
   }
+
+  // Leaving mid-build would orphan a half-built dashboard: ask first.
+  const building = phase === 'planning' || phase === 'building'
+  useEffect(() => {
+    if (!building) return
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault()
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [building])
 
   const source = sources.find((s) => s.id === sourceId)
   const undefinedCount = source?.tables.flatMap((t) => t.columns).filter((c) => c.flag).length ?? 0
@@ -100,12 +113,27 @@ export function NewDashboardPage() {
     <div className="page narrow">
       <h1>New dashboard</h1>
       <p className="muted">Stardeck looks at your data and builds a dashboard. You can change anything afterwards.</p>
+      {loaded && sources.length === 0 ? (
+        <section className="empty new-empty">
+          <span className="icon-tile large"><Database size={26} aria-hidden /></span>
+          <h2>Connect some data first</h2>
+          <p>Upload a spreadsheet or connect a database, then come back to build a dashboard from it.</p>
+          <Link to="/sources" className="btn primary">Add a data source</Link>
+        </section>
+      ) : (
+      <div className="panel new-form">
 
       <label className="field">
         <span>Data source</span>
         <select value={sourceId} onChange={(e) => setSourceId(e.target.value)}>
           {sources.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
         </select>
+        {source && (
+          <small className="muted">
+            {source.tables.length} {source.tables.length === 1 ? 'table' : 'tables'}: {source.tables.slice(0, 6).map((t) => t.name).join(', ')}
+            {source.tables.length > 6 ? '…' : ''}
+          </small>
+        )}
       </label>
       {undefinedCount > 0 && (
         <p className="hint">
@@ -123,9 +151,14 @@ export function NewDashboardPage() {
         {GOAL_IDEAS.map((g) => <button key={g} className="chip" onClick={() => setGoal(g)}>{g}</button>)}
       </div>
 
-      <button className="btn primary large" disabled={!sourceId} onClick={generate}>
-        <Sparkles size={16} aria-hidden /> Generate dashboard
-      </button>
+      <div className="form-actions">
+        <button className="btn primary large" disabled={!sourceId} onClick={generate}>
+          <Sparkles size={16} aria-hidden /> Generate dashboard
+        </button>
+        <button className="btn text large" onClick={() => navigate(-1)}>Cancel</button>
+      </div>
+      </div>
+      )}
     </div>
   )
 }

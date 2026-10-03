@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import {
-  ArrowDown, ArrowUp, ChevronDown, Code, Database, LoaderCircle, Pencil, Plus, Save, Sparkles, Trash2, X,
+  ArrowDown, ArrowUp, ChevronDown, Code, Database, LoaderCircle, Pencil, Plus, Save, Sparkles, Trash2, Undo2, X,
 } from 'lucide-react'
 import { api, type DataSource, type StepSuggestion, type TransformPreview, type TransformStep } from '../api'
 import { StepForm } from '../components/StepForm'
+import { Popover } from '../components/Popover'
 import { formatCategory } from '../lib/format'
 import { STEP_DEFS, STEP_GROUPS } from '../lib/steps'
 
@@ -26,6 +27,7 @@ export function TransformEditor() {
   const [form, setForm] = useState<FormState>(null)
   const [addOpen, setAddOpen] = useState(false)
   const [headerMenu, setHeaderMenu] = useState<string | null>(null)
+  const addRef = useRef<HTMLButtonElement>(null)
   const [aiText, setAiText] = useState('')
   const [aiBusy, setAiBusy] = useState(false)
   const [suggestion, setSuggestion] = useState<StepSuggestion | null>(null)
@@ -68,6 +70,21 @@ export function TransformEditor() {
   const columnsAt = (i: number) => preview?.stepColumns?.[i] ?? preview?.columns ?? []
 
   const change = (next: TransformStep[], select: number) => { setSteps(next); setSelected(select); setDirty(true); setSuggestion(null) }
+  // Deleting a step can be undone for a few seconds (the toast below).
+  const [undo, setUndo] = useState<{ steps: TransformStep[]; selected: number; label: string } | null>(null)
+  const undoTimer = useRef<number | undefined>(undefined)
+  const removeStep = (i: number) => {
+    setUndo({ steps, selected, label: labels[i] ?? steps[i].op })
+    window.clearTimeout(undoTimer.current)
+    undoTimer.current = window.setTimeout(() => setUndo(null), 6000)
+    change(steps.filter((_, j) => j !== i), Math.min(selected, steps.length - 1))
+  }
+  const undoRemove = () => {
+    if (!undo) return
+    window.clearTimeout(undoTimer.current)
+    change(undo.steps, undo.selected)
+    setUndo(null)
+  }
   const insert = (step: TransformStep, at: number) => change([...steps.slice(0, at), step, ...steps.slice(at)], at + 1)
   const applyForm = (step: TransformStep) => {
     if (!form) return
@@ -144,16 +161,15 @@ export function TransformEditor() {
         <aside className="steps-panel" aria-label="Applied steps">
           <h2>Applied steps</h2>
           <ol className="step-list">
-            <li className={`step-item ${selected === 0 ? 'selected' : ''}`}>
-              <button className="step-main" onClick={() => setSelected(0)}>
-                <Database size={14} aria-hidden />
-                <span>Source: <select value={base} onClick={(e) => e.stopPropagation()} aria-label="Source table"
-                  onChange={(e) => { setBase(e.target.value); setDirty(true) }}>
-                  <option value="" disabled>Choose a table…</option>
-                  {source.tables.filter((t) => t.name !== routeName && !t.error).map((t) =>
-                    <option key={t.name} value={t.name}>{t.name}{t.prepared ? ' (prepared)' : ''}</option>)}
-                </select></span>
+            <li className={`step-item step-source ${selected === 0 ? 'selected' : ''}`}>
+              <button className="step-main" onClick={() => setSelected(0)} title="Show the source table">
+                <Database size={14} aria-hidden /> <span>Source</span>
               </button>
+              <select value={base} aria-label="Source table" onChange={(e) => { setBase(e.target.value); setDirty(true) }}>
+                <option value="" disabled>Choose a table…</option>
+                {source.tables.filter((t) => t.name !== routeName && !t.error).map((t) =>
+                  <option key={t.name} value={t.name}>{t.name}{t.prepared ? ' (prepared)' : ''}</option>)}
+              </select>
             </li>
             {steps.map((s, i) => (
               <li key={i} className={`step-item ${selected === i + 1 ? 'selected' : ''} ${errorStep === i ? 'failed' : ''} ${i + 1 > selected ? 'later' : ''}`}>
@@ -164,7 +180,7 @@ export function TransformEditor() {
                   <button className="icon-btn" title="Edit step" onClick={() => { setSelected(i); setForm({ index: i, step: s, replace: true }) }}><Pencil size={13} /></button>
                   <button className="icon-btn" title="Move up" disabled={i === 0} onClick={() => move(i, -1)}><ArrowUp size={13} /></button>
                   <button className="icon-btn" title="Move down" disabled={i === steps.length - 1} onClick={() => move(i, 1)}><ArrowDown size={13} /></button>
-                  <button className="icon-btn" title="Delete step" onClick={() => change(steps.filter((_, j) => j !== i), Math.min(selected, steps.length - 1))}><Trash2 size={13} /></button>
+                  <button className="icon-btn" title="Delete step" onClick={() => removeStep(i)}><Trash2 size={13} /></button>
                 </span>
               </li>
             ))}
@@ -174,12 +190,13 @@ export function TransformEditor() {
 
         <section className="transform-main">
           <div className="transform-toolbar">
-            <div className="menu-anchor">
-              <button className="btn primary small" disabled={!base} onClick={() => setAddOpen((o) => !o)} aria-expanded={addOpen}>
+            <div>
+              <button ref={addRef} className="btn primary small" disabled={!base} onClick={() => setAddOpen((o) => !o)}
+                aria-haspopup="menu" aria-expanded={addOpen}>
                 <Plus size={14} aria-hidden /> Add step <ChevronDown size={13} aria-hidden />
               </button>
               {addOpen && (
-                <div className="menu add-menu" role="menu">
+                <Popover anchor={addRef} align="start" onClose={() => setAddOpen(false)} label="Add a step">
                   {STEP_GROUPS.map((g) => (
                     <div key={g}>
                       <div className="menu-label">{g}</div>
@@ -188,7 +205,7 @@ export function TransformEditor() {
                       ))}
                     </div>
                   ))}
-                </div>
+                </Popover>
               )}
             </div>
             <form className="ai-step" onSubmit={(e) => { e.preventDefault(); void suggest() }}>
@@ -231,7 +248,7 @@ export function TransformEditor() {
               <p className="muted small">{preview.rows.length}{preview.truncated ? '+' : ''} rows shown · {preview.columns.length} columns · click a column for quick actions</p>
               <PreviewTable preview={preview} onHeader={setHeaderMenu} activeHeader={headerMenu}
                 headerMenu={(col) => (
-                  <div className="menu header-menu" role="menu">
+                  <>
                     <button className="menu-item" onClick={() => quick({ op: 'sort', column: col, descending: false })}>Sort ascending</button>
                     <button className="menu-item" onClick={() => quick({ op: 'sort', column: col, descending: true })}>Sort descending</button>
                     <button className="menu-item" onClick={() => openAdd('filter_rows', { column: col, operator: 'eq' })}>Filter…</button>
@@ -246,12 +263,18 @@ export function TransformEditor() {
                     <button className="menu-item" onClick={() => openAdd('pivot', { column: col, func: 'sum', values: [] })}>Pivot this column…</button>
                     <div className="menu-sep" />
                     <button className="menu-item danger" onClick={() => quick({ op: 'remove_columns', columns: [col] })}>Remove column</button>
-                  </div>
+                  </>
                 )} />
             </div>
           )}
         </section>
       </div>
+      {undo && (
+        <div className="toast" role="status">
+          <span>Deleted “{undo.label}”</span>
+          <button className="btn text small" onClick={undoRemove}><Undo2 size={14} aria-hidden /> Undo</button>
+        </div>
+      )}
     </div>
   )
 }
@@ -262,19 +285,15 @@ function PreviewTable({ preview, maxRows, onHeader, activeHeader, headerMenu }: 
   headerMenu?: (col: string) => React.ReactNode
 }) {
   const rows = maxRows ? preview.rows.slice(0, maxRows) : preview.rows
+  // Identifiers and codes read as labels, not quantities: no thousands separators.
+  const plain = preview.columns.map((c) => /(^|_)(id|code|no|num|pin|zip|year|yr)$/i.test(c) || /^id/i.test(c))
   return (
     <div className="table-wrap preview-table">
       <table className="data-table">
         <thead>
           <tr>{preview.columns.map((c, j) => (
             <th key={c} className={typeof preview.rows[0]?.[j] === 'number' ? 'num' : undefined}>
-              {onHeader ? (
-                <span className="menu-anchor">
-                  <button className="th-btn" aria-expanded={activeHeader === c}
-                    onClick={() => onHeader(activeHeader === c ? null : c)}>{c} <ChevronDown size={12} aria-hidden /></button>
-                  {activeHeader === c && headerMenu?.(c)}
-                </span>
-              ) : c}
+              {onHeader ? <HeaderButton column={c} open={activeHeader === c} onToggle={onHeader} menu={headerMenu} /> : c}
             </th>
           ))}</tr>
         </thead>
@@ -282,12 +301,28 @@ function PreviewTable({ preview, maxRows, onHeader, activeHeader, headerMenu }: 
           {rows.map((r, i) => (
             <tr key={i}>{r.map((v, j) => (
               <td key={j} className={typeof v === 'number' ? 'num' : undefined}>
-                {v === null ? <span className="null">blank</span> : typeof v === 'number' ? v.toLocaleString('en-IN') : formatCategory(v)}
+                {v === null ? <span className="null">blank</span> : typeof v === 'number' ? (plain[j] ? String(v) : v.toLocaleString('en-IN')) : formatCategory(v)}
               </td>
             ))}</tr>
           ))}
         </tbody>
       </table>
     </div>
+  )
+}
+
+function HeaderButton({ column, open, onToggle, menu }: {
+  column: string; open: boolean; onToggle: (col: string | null) => void; menu?: (col: string) => React.ReactNode
+}) {
+  const ref = useRef<HTMLButtonElement>(null)
+  return (
+    <>
+      <button ref={ref} className="th-btn" aria-haspopup="menu" aria-expanded={open} onClick={() => onToggle(open ? null : column)}>
+        {column} <ChevronDown size={12} aria-hidden />
+      </button>
+      {open && menu && (
+        <Popover anchor={ref} align="start" onClose={() => onToggle(null)} label={`Actions for ${column}`}>{menu(column)}</Popover>
+      )}
+    </>
   )
 }

@@ -1,4 +1,9 @@
-# ✦ Stardeck
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-dark.png">
+    <img src="docs/images/logo-light.png" alt="Stardeck" height="56">
+  </picture>
+</h1>
 
 **AI-built dashboards for your database, running entirely on your own hardware.**
 

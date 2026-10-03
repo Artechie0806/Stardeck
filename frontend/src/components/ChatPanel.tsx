@@ -5,12 +5,20 @@ import { newId } from '../lib/browser'
 import { chartLabel } from '../lib/chartFit'
 import { WidgetVisual } from './WidgetVisual'
 
-const SUGGESTIONS = [
-  'Orders by status',
-  'Top 5 customers by revenue',
-  'Make revenue by city a donut chart',
-  'sts means order status: 1 = Completed, 2 = Cancelled, 9 = Refunded',
-]
+interface Suggestion { text: string; /** false = put it in the input for the user to finish */ send: boolean }
+
+/** Starter prompts built from this dashboard's own widgets and the source's unclear columns. */
+function buildSuggestions(widgets: { title: string; type: string }[], flagged: string | null): Suggestion[] {
+  const out: Suggestion[] = []
+  const kpi = widgets.find((w) => w.type === 'kpi')
+  const chart = widgets.find((w) => w.type !== 'kpi' && w.type !== 'table')
+  if (kpi) out.push({ text: `Show ${kpi.title.toLowerCase()} by month`, send: true })
+  if (chart) out.push({ text: `Make "${chart.title}" a ${chart.type === 'bar' ? 'donut' : 'bar'} chart`, send: true })
+  if (kpi) out.push({ text: `Compare ${kpi.title.toLowerCase()} with last year`, send: true })
+  if (!widgets.length) out.push({ text: 'What are the most useful charts for this data?', send: true })
+  if (flagged) out.push({ text: `${flagged} means `, send: false })
+  return out.slice(0, 4)
+}
 
 interface Props {
   dashboardId: string
@@ -18,9 +26,14 @@ interface Props {
   preset: DatePreset
   onApplied: () => void
   onClose: () => void
+  /** Hidden (not unmounted) when closed, so the conversation survives. */
+  open: boolean
+  widgets: { title: string; type: string }[]
+  /** Text to place in the input, e.g. from a broken widget's "Ask the assistant". n changes on every hand-off. */
+  draft?: { text: string; n: number }
 }
 
-export function ChatPanel({ dashboardId, sourceId, preset, onApplied, onClose }: Props) {
+export function ChatPanel({ dashboardId, sourceId, preset, onApplied, onClose, open, widgets, draft }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([{
     id: 'welcome', role: 'assistant',
     text: 'Ask me to add or change charts, or tell me what a column means. I always show you the change before saving it.',
@@ -30,6 +43,26 @@ export function ChatPanel({ dashboardId, sourceId, preset, onApplied, onClose }:
   // Set while the assistant waits for the answer to its clarifying question.
   const [pending, setPending] = useState<string | undefined>()
   const logRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+  const [flagged, setFlagged] = useState<string | null>(null)
+  const [draftSeen, setDraftSeen] = useState(0)
+  if (draft && draft.n !== draftSeen) { // adopt a new hand-off during render (no effect round-trip)
+    setDraftSeen(draft.n)
+    setInput(draft.text)
+  }
+
+  useEffect(() => {
+    api.getSource(sourceId).then((src) => {
+      for (const t of src.tables) {
+        const c = t.columns.find((x) => x.flag)
+        if (c) { setFlagged(c.name); return }
+      }
+    }).catch(() => {})
+  }, [sourceId])
+
+  useEffect(() => {
+    if (open && draft) inputRef.current?.focus()
+  }, [open, draft])
 
   // Scroll only the log itself; scrollIntoView would also scroll the page.
   useEffect(() => {
@@ -78,7 +111,7 @@ export function ChatPanel({ dashboardId, sourceId, preset, onApplied, onClose }:
   }
 
   return (
-    <aside className="chat" aria-label="Dashboard assistant">
+    <aside className="chat" aria-label="Dashboard assistant" hidden={!open}>
       <header className="chat-head">
         <span><Sparkles size={16} aria-hidden /> Assistant</span>
         <button className="icon-btn" onClick={onClose} title="Close assistant"><X size={16} /></button>
@@ -108,12 +141,18 @@ export function ChatPanel({ dashboardId, sourceId, preset, onApplied, onClose }:
 
       {messages.length === 1 && (
         <div className="chat-suggestions">
-          {SUGGESTIONS.map((s) => <button key={s} className="chip" onClick={() => send(s)}>{s}</button>)}
+          <span className="muted small">Try:</span>
+          {buildSuggestions(widgets, flagged).map((s) => (
+            <button key={s.text} className="chip" onClick={() => {
+              if (s.send) void send(s.text)
+              else { setInput(s.text); inputRef.current?.focus() }
+            }}>{s.send ? s.text : `${s.text}…`}</button>
+          ))}
         </div>
       )}
 
       <form className="chat-input" onSubmit={onSubmit}>
-        <textarea value={input} rows={2} placeholder="Add a chart, change one, or explain a column…"
+        <textarea ref={inputRef} value={input} rows={2} aria-label="Message the assistant" placeholder="Add a chart, change one, or explain a column…"
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(input) } }} />
         <button type="submit" className="icon-btn primary" disabled={!input.trim() || busy} title="Send"><Send size={16} /></button>

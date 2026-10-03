@@ -2,13 +2,14 @@ import type { ChartSpec, QueryResult } from '../api/types'
 import { deriveRoles, naturalOrder } from '../lib/chartFit'
 import { inkFor, rampColor } from '../lib/chartOptions'
 import { formatCategory, formatValue, humanize } from '../lib/format'
-import { readChartColors } from '../lib/themeContext'
+import { readChartColors, useTheme } from '../lib/themeContext'
 
 // Averages, rates and percentages can't be added up, so they get no totals row/column.
 const NON_ADDITIVE = /avg|average|mean|median|rate|ratio|pct|percent|share|margin|aov/i
 
 /** Pivot table (Power BI "Matrix"): rows x columns, heat-shaded cells, totals when they make sense. */
 export function MatrixTable({ spec, result }: { spec: ChartSpec; result: QueryResult }) {
+  useTheme() // re-render (and re-read the heat ramp) when the theme changes
   const roles = deriveRoles(result, spec)
   const xi = result.columns.indexOf(roles.x ?? '')
   const si = result.columns.indexOf(roles.series ?? '')
