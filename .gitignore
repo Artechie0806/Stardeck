@@ -10,3 +10,5 @@ dist/
 backend/data/
 backend/evals/reports/*.json
 backend/evals/.cache/
+/Stardeck Logo Directions
+scripts/seed_stardeck_test.py
