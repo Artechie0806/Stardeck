@@ -65,7 +65,7 @@ export function TransformsPage() {
           <div key={t.name} className="dash-card linked">
             <div className="card-top">
               <span className="icon-tile"><Wand2 size={19} aria-hidden /></span>
-              <ConfirmDelete label="Delete prepared table?" title="Delete prepared table" onConfirm={() => remove(t.name)} />
+              <ConfirmDelete label={`Delete “${t.name}”?`} detail="Only the recipe is removed; your source data isn’t touched." title="Delete prepared table" onConfirm={() => remove(t.name)} />
             </div>
             <h2><Link to={`/sources/${id}/transforms/${t.name}`} className="card-link"><code>{t.name}</code></Link></h2>
             <p>From <code>{t.base}</code> · {t.steps.length} step{t.steps.length === 1 ? '' : 's'}</p>

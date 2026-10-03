@@ -1,7 +1,7 @@
 // Real Stardeck API calls. Errors surface FastAPI's `detail` message, which is written for users.
 import { presetRanges } from '../lib/dates'
 import type {
-  ChatProposal, ColumnDefinition, Dashboard, DashboardDef, DashboardSummary, DataSource, DatePreset, GeneratedWidget,
+  Analysis, ChatAgent, ChatProposal, ColumnDefinition, Dashboard, DashboardDef, DashboardSummary, DataSource, DatePreset, GeneratedWidget,
   GenerateEvent, GlossaryTerm, GridPos, Health, QueryRequest, QueryResult, SourceConfig, TestResult, Widget,
   WidgetDraft, WidgetPatch, PreparedTable, StepSuggestion, TransformPreview, TransformStep,
 } from './types'
@@ -153,11 +153,14 @@ export const httpApi = {
   },
 
   /** `pending` = the request the assistant last asked a question about (sent back with the answer). */
-  chat: (id: string, message: string, history: { role: string; text: string }[], preset: DatePreset, pending?: string) => {
+  /** `agent` skips the router when a button already knows who should answer (e.g. "Add as chart"). */
+  chat: (id: string, message: string, history: { role: string; text: string }[], preset: DatePreset, pending?: string,
+    agent?: ChatAgent, basisSql?: string) => {
     const { range, compare } = presetRanges(preset)
-    return request<{ text: string; proposal?: ChatProposal; options?: string[]; pending?: string }>(
+    return request<{ text: string; proposal?: ChatProposal; options?: string[]; pending?: string; agent?: ChatAgent;
+      analysis?: Analysis }>(
       `/dashboards/${enc(id)}/chat`, json('POST', {
-        message, history, pending, start: range?.start, end: range?.end, compareStart: compare?.start, compareEnd: compare?.end,
+        message, history, pending, agent, basisSql, start: range?.start, end: range?.end, compareStart: compare?.start, compareEnd: compare?.end,
       }))
   },
 

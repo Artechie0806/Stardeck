@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Link, useParams } from 'react-router'
 import { Check, Ellipsis, Eye, Link2, Move, Printer, RefreshCw, Sparkles, Undo2 } from 'lucide-react'
 import { api, type ChartType, type Dashboard, type DatePreset, type GridPos, type Stack, type Widget } from '../api'
@@ -17,10 +18,16 @@ export function DashboardPage() {
   const [notice, setNotice] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [editing, setEditing] = useState(false)
-  // Wide screens get the assistant docked open; on narrow ones it would cover the dashboard.
-  const [chatOpen, setChatOpen] = useState(() => window.matchMedia('(min-width: 1101px)').matches)
-  const [chatMounted, setChatMounted] = useState(chatOpen) // stays mounted once opened, so the conversation survives
+  // The assistant slides over the dashboard; it starts closed so the dashboard gets the whole screen.
+  const [chatOpen, setChatOpen] = useState(false)
+  const [chatMounted, setChatMounted] = useState(false) // stays mounted once opened, so the conversation survives
   const [draft, setDraft] = useState<{ text: string; n: number } | undefined>()
+  const launcherRef = useRef<HTMLButtonElement>(null)
+  // Whatever opened the assistant gets focus back when it closes.
+  const opener = useRef<HTMLElement | null>(null)
+  const wasOpen = useRef(false)
+  // A widget the assistant just added or changed: scrolled into view and briefly highlighted.
+  const [flash, setFlash] = useState<{ id: string; n: number } | null>(null)
   const [moreOpen, setMoreOpen] = useState(false)
   const moreRef = useRef<HTMLButtonElement>(null)
   // Removing a widget waits a few seconds so it can be undone.
@@ -59,7 +66,37 @@ export function DashboardPage() {
 
   useEffect(() => { void load() }, [load])
 
-  const openChat = () => { setChatOpen(true); setChatMounted(true) }
+  const openChat = () => {
+    const active = document.activeElement
+    opener.current = active instanceof HTMLElement && active !== document.body ? active : null
+    setChatOpen(true)
+    setChatMounted(true)
+  }
+  const closeChat = useCallback(() => setChatOpen(false), [])
+
+  useEffect(() => {
+    if (chatOpen) { wasOpen.current = true; return }
+    if (!wasOpen.current) return
+    wasOpen.current = false
+    const back = opener.current?.isConnected && opener.current.offsetParent !== null ? opener.current : launcherRef.current
+    back?.focus({ preventScroll: true })
+  }, [chatOpen])
+
+  useEffect(() => {
+    if (!flash) return
+    let frame = 0
+    let tries = 0
+    const find = () => { // the grid may need a frame or two to place a new widget
+      const el = document.querySelector<HTMLElement>(`[data-widget-id="${CSS.escape(flash.id)}"]`)
+      if (el) {
+        const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+        el.scrollIntoView({ block: 'center', behavior: still ? 'auto' : 'smooth' })
+      } else if (tries++ < 30) frame = requestAnimationFrame(find)
+    }
+    find()
+    const done = window.setTimeout(() => setFlash(null), 2600)
+    return () => { cancelAnimationFrame(frame); window.clearTimeout(done) }
+  }, [flash])
 
   if (error) {
     return (
@@ -135,7 +172,7 @@ export function DashboardPage() {
   }
 
   return (
-    <div className={`dashboard-layout ${chatOpen ? 'with-chat' : ''}`}>
+    <div className="dashboard-layout">
       <div className="page dashboard-page">
         <div className="page-head">
           <div className="title-block">
@@ -163,11 +200,6 @@ export function DashboardPage() {
             <button className={`btn ${editing ? 'primary' : 'ghost'} wide-only`} onClick={() => setEditing((e) => !e)}>
               {editing ? <><Check size={15} aria-hidden /> Done</> : <><Move size={15} aria-hidden /> Edit layout</>}
             </button>
-            {!chatOpen && (
-              <button className="btn primary" onClick={openChat}>
-                <Sparkles size={15} aria-hidden /> Assistant
-              </button>
-            )}
             <button ref={moreRef} className="btn ghost narrow-only" aria-label="More actions" aria-haspopup="menu"
               aria-expanded={moreOpen} onClick={() => setMoreOpen((o) => !o)}>
               <Ellipsis size={16} aria-hidden />
@@ -199,23 +231,40 @@ export function DashboardPage() {
           <section className="empty">
             <span className="icon-tile large"><Sparkles size={26} aria-hidden /></span>
             <h2>This dashboard is empty</h2>
-            <p>Ask the assistant for a chart, e.g. “revenue by month”.</p>
-            {!chatOpen && <button className="btn primary" onClick={openChat}><Sparkles size={15} aria-hidden /> Open assistant</button>}
+            <p>Ask Stardeck for a chart, e.g. “revenue by month”.</p>
+            <button className="btn primary" onClick={openChat}><Sparkles size={15} aria-hidden /> Ask Stardeck</button>
           </section>
         )}
 
         <div className={loading ? 'refetching' : undefined}>
-          <DashboardGrid widgets={visible} preset={preset} editing={editing}
+          <DashboardGrid widgets={visible} preset={preset} editing={editing} highlightId={flash?.id}
             onLayoutChange={onLayoutChange} onRemove={onRemove} onChangeType={onChangeType}
             onRunSql={onRunSql} onSaveSql={onSaveSql} onAsk={onAsk} />
         </div>
       </div>
 
+      {createPortal(
+        <button ref={launcherRef} className={`chat-launcher${chatOpen ? ' is-hidden' : ''}`} onClick={openChat}
+          aria-haspopup="dialog" aria-expanded={chatOpen} aria-controls={chatMounted ? 'stardeck-assistant' : undefined}>
+          <Sparkles size={18} aria-hidden /> <span>Ask Stardeck</span>
+        </button>,
+        document.body,
+      )}
       {chatMounted && (
-        <ErrorBoundary label="The assistant hit an error">
+        // Keyed by dashboard: a conversation (and its proposals) belongs to the dashboard it was about.
+        <ErrorBoundary key={id} label="The assistant hit an error">
           <ChatPanel dashboardId={id} sourceId={dashboard.sourceId} preset={preset} open={chatOpen} draft={draft}
-            widgets={visible.map((w) => ({ title: w.title, type: w.spec.type }))}
-            onApplied={() => void load()} onClose={() => setChatOpen(false)} />
+            widgets={visible.map((w) => ({ id: w.id, title: w.title, type: w.spec.type }))}
+            onApplied={async (widgetId) => { await load(); if (widgetId) setFlash({ id: widgetId, n: Date.now() }) }}
+            onShow={(widgetId) => {
+              // Close the panel where it covers the dashboard, or when the widget sits behind it.
+              const r = document.querySelector(`[data-widget-id="${CSS.escape(widgetId)}"]`)?.getBoundingClientRect()
+              const panel = document.querySelector('.chat')?.getBoundingClientRect()
+              const behind = !!r && !!panel && Math.min(r.right, panel.right) - Math.max(r.left, panel.left) > r.width * 0.4
+              if (behind || window.matchMedia('(max-width: 1100px)').matches) setChatOpen(false)
+              setFlash({ id: widgetId, n: Date.now() })
+            }}
+            onClose={closeChat} />
         </ErrorBoundary>
       )}
       {removing && (

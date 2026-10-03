@@ -15,7 +15,7 @@ def ensure_read_only(sql: str, dialect: str) -> str:
     """Reject anything that is not a single SELECT statement. Returns normalised SQL."""
     try:
         statements = [s for s in sqlglot.parse(sql, read=dialect) if s is not None]
-    except sqlglot.errors.ParseError as exc:
+    except sqlglot.errors.SqlglotError as exc:
         raise UnsafeSQLError(f"Could not parse SQL: {exc}") from exc
     if len(statements) != 1:
         raise UnsafeSQLError("Exactly one statement is allowed.")

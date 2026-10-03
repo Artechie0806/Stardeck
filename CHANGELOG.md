@@ -40,6 +40,27 @@
     A "Find a column" search covers every table.
   - A column a prepared table passes through is flagged on its original table only, so it isn't counted twice.
   - Deleting a step in the transform editor can be undone.
+- **Maps**: when a map shows an amount per place, circle *area* is proportional to the amount, the largest
+  circle scales with the map size and number of points, and a size legend explains the scale. Large circles are
+  drawn under small ones. Maps of just places, or where every amount is the same, use small dots.
+- **Assistant redesign**:
+  - The assistant is now a frosted-glass panel that slides over the dashboard on every screen size; the dashboard keeps its full width, and on phones the panel goes full screen.
+  - It opens from a pink "Ask Stardeck" button. Escape closes it, focus returns to whatever opened it, and the conversation is kept.
+  - New empty state with starter suggestions taken from your dashboard, labelled answers, a "thinking" indicator, and "Try again" on errors.
+  - Proposal cards are clearer and show a properly sized chart preview. Pie legends no longer overlap the chart.
+  - After "Add to dashboard", the new widget scrolls into view, highlighted, with no reload.
+  - Fixed: on phones the assistant could grow wider than the screen, pushing its close button off screen. A newly added chart then stayed hidden behind the panel until a reload.
+- **Data analyst agent**: ask the assistant questions about your data ("which city brought in the most
+  revenue this year?", "why did revenue grow in 2026?") and get a plain-English answer with exact figures.
+  It runs read-only queries, and only uses numbers that came back from them. Every answer has "Show the
+  numbers" and "How I worked it out", follow-up questions, and "Add as chart", which builds a widget
+  from the same query. A small router call picks the dashboard builder or the analyst for each message,
+  so each keeps its own focused prompt.
+- Fixed: text the database couldn't even tokenize (e.g. prose in place of SQL) crashed the request
+  instead of being rejected.
+- **Sample data**: cities in the Retail demo now differ a lot in size, like real markets. Revenue runs from about
+  ₹1.5Cr (Mumbai) down to about ₹2L (Chennai), so maps and city rankings show real contrast. The Chart gallery
+  shows the bubble map next to a dots-only map.
 - AI step suggestions cover all three; the user's own aggregation word ("average", "count") wins over
   the model's guess, and invented pivot values are ignored.
 

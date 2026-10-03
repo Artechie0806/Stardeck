@@ -309,7 +309,7 @@ class Compiler:
         sql = f"WITH {', '.join(ctes)} SELECT * FROM {src}" if ctes else f"SELECT * FROM {src}"
         try:
             sqlglot.parse_one(sql, read=self.dialect)
-        except sqlglot.errors.ParseError as exc:  # a bad calculated expression slipped through
+        except sqlglot.errors.SqlglotError as exc:  # a bad calculated expression slipped through
             raise TransformError(f"The recipe produced invalid SQL: {str(exc).splitlines()[0]}") from exc
         return sql, history
 
@@ -659,7 +659,7 @@ class Compiler:
         """Validate a calculated-column expression: plain row-level SQL over existing columns."""
         try:
             tree = sqlglot.parse_one(text, read=self.dialect)
-        except sqlglot.errors.ParseError as exc:
+        except sqlglot.errors.SqlglotError as exc:
             raise TransformError(f"Can't read the expression: {str(exc).splitlines()[0]}", i) from exc
         for node in tree.walk():
             if isinstance(node, (exp.Select, exp.Subquery, exp.AggFunc, exp.Window)):
@@ -690,7 +690,7 @@ def kind_of(sql_type: str) -> str:
 def referenced_tables(sql: str, dialect: str) -> set[str]:
     try:
         tree = sqlglot.parse_one(sql, read=dialect)
-    except sqlglot.errors.ParseError:
+    except sqlglot.errors.SqlglotError:
         return set()
     ctes = {c.alias_or_name for c in tree.find_all(exp.CTE)}
     return {t.name for t in tree.find_all(exp.Table) if t.name not in ctes}

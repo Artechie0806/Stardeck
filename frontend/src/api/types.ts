@@ -200,8 +200,21 @@ export interface ChatMessage {
   text: string
   proposal?: ChatProposal
   proposalState?: 'pending' | 'applied' | 'dismissed'
-  /** Tappable answers when the assistant asks a clarifying question. */
+  /** Tappable answers when the assistant asks a clarifying question (or the analyst's follow-ups). */
   options?: string[]
+  /** Which agent answered: the dashboard builder or the data analyst. */
+  agent?: ChatAgent
+  analysis?: Analysis
+}
+
+export type ChatAgent = 'builder' | 'analyst'
+
+/** The analyst's working: the queries it ran and the last result, so its numbers can be checked. */
+export interface Analysis {
+  queries: { sql: string; rows: number }[]
+  evidence: QueryResult | null
+  /** A chart request the builder can turn into a widget ("Add as chart"). */
+  chartRequest: string | null
 }
 
 /** Streamed while a dashboard is generated, so progress shows widget by widget. */

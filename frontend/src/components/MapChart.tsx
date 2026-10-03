@@ -18,6 +18,7 @@ export function MapChart({ spec, result }: { spec: ChartSpec; result: QueryResul
   const map = useRef<L.Map | null>(null)
   const layer = useRef<L.LayerGroup | null>(null)
   const [status, setStatus] = useState<string | null>(null)
+  const [legend, setLegend] = useState<{ value: number; radius: number }[] | null>(null)
   const { resolved } = useTheme()
 
   // Coordinates come straight from lat/lon columns, or from geocoding a place column.
@@ -61,20 +62,27 @@ export function MapChart({ spec, result }: { spec: ChartSpec; result: QueryResul
     return () => { ro.disconnect(); m.remove(); map.current = null }
   }, [])
 
-  // Draw bubbles: area-scaled radius, series-1 fill, 2px surface ring, tooltip with label + value.
+  // Draw markers. With a quantity, a proportional-symbol map: circle AREA tracks the value, so a city with
+  // twice the revenue gets twice the ink. Without one (or when every value is the same), small dots.
   useEffect(() => {
     const m = map.current, g = layer.current
     if (!m || !g || !points) return
     g.clearLayers()
     const c = readChartColors()
-    const max = Math.max(...points.map((p) => Math.abs(p.value ?? 0)), 1)
-    for (const p of points) {
-      const radius = p.value === null ? 6 : 6 + 22 * Math.sqrt(Math.abs(p.value) / max)
-      L.circleMarker([p.lat, p.lon], {
-        radius, color: c.surface, weight: 2, fillColor: c.series[0], fillOpacity: 0.7,
-      }).bindTooltip(`<strong>${p.value === null ? '' : formatValue(p.value, spec)}</strong><br>${escapeHtml(p.label)}`,
-        { direction: 'top' }).addTo(g)
+    const sized = markerScale(points, el.current?.clientWidth ?? 600)
+    // Biggest first, so small bubbles are drawn on top and stay hoverable.
+    const ordered = sized ? [...points].sort((a, b) => Math.abs(b.value ?? 0) - Math.abs(a.value ?? 0)) : points
+    for (const p of ordered) {
+      const radius = sized ? sized.radius(p.value) : DOT_RADIUS
+      L.circleMarker([p.lat, p.lon], sized
+        ? { radius, color: c.surface, weight: 1.5, fillColor: c.series[0], fillOpacity: 0.62 }
+        : { radius, color: c.surface, weight: 1.5, fillColor: c.series[0], fillOpacity: 0.95 },
+      ).bindTooltip(
+        `${p.value === null ? '' : `<strong>${formatValue(p.value, spec)}</strong><br>`}${escapeHtml(p.label)}`,
+        { direction: 'top', offset: [0, -radius] },
+      ).addTo(g)
     }
+    setLegend(sized ? sized.legend : null)
     if (points.length) m.fitBounds(L.latLngBounds(points.map((p) => [p.lat, p.lon])), { padding: [28, 28], maxZoom: 9 })
   }, [points, spec, resolved])
 
@@ -83,11 +91,66 @@ export function MapChart({ spec, result }: { spec: ChartSpec; result: QueryResul
       <div ref={el} className={`map ${resolved === 'dark' ? 'map-dark' : ''}`} role="img"
         aria-label={`Map of ${humanize(spec.y ?? 'values')}`} />
       {status && <div className="map-status">{status}</div>}
+      {legend && (
+        <div className="map-legend" aria-hidden>
+          {/* Nested circles sharing a baseline, each with a leader line to its value (classic size legend). */}
+          <svg width={legend[0].radius * 2 + 64} height={legendLayout(legend).height}>
+            {legendLayout(legend).items.map((l) => (
+              <g key={l.value}>
+                <circle cx={l.cx} cy={l.cy} r={l.radius} />
+                <polyline points={`${l.cx},${l.top} ${l.lineEnd - 3},${l.top} ${l.lineEnd},${l.labelY}`} />
+                <text x={l.lineEnd + 3} y={l.labelY} dominantBaseline="middle">{formatValue(l.value, spec, true)}</text>
+              </g>
+            ))}
+          </svg>
+        </div>
+      )}
     </div>
   )
 }
 
 type Row = QueryResult['rows'][number]
+
+const DOT_RADIUS = 4.5
+const MIN_RADIUS = 3
+
+/**
+ * Bubble sizing for a quantity map, or null when there's no quantity to show (no value column, or every
+ * value identical, e.g. one row per store). The largest bubble shrinks as points get denser and the map
+ * gets smaller, so busy maps stay readable.
+ */
+function markerScale(points: { value: number | null }[], width: number) {
+  const values = points.map((p) => p.value).filter((v): v is number => v !== null).map(Math.abs)
+  if (values.length < 2) return null
+  const max = Math.max(...values), min = Math.min(...values)
+  if (max <= 0 || max === min) return null
+  const density = points.length > 150 ? 0.45 : points.length > 60 ? 0.6 : points.length > 25 ? 0.8 : 1
+  const maxR = Math.max(7, Math.min(14, width / 48) * density)
+  const radius = (v: number | null) => (v === null ? MIN_RADIUS : Math.max(MIN_RADIUS, maxR * Math.sqrt(Math.abs(v) / max)))
+  const nice = niceStep(max / 2)
+  const legend = [max, nice].filter((v, i, a) => v > 0 && a.indexOf(v) === i).map((v) => ({ value: v, radius: radius(v) }))
+  return { radius, legend }
+}
+
+/** Size legend geometry: circles share a baseline; labels keep at least 12px apart even when circles are close. */
+function legendLayout(legend: { value: number; radius: number }[]) {
+  const R = legend[0].radius, cx = R + 2, base = R * 2 + 3, lineEnd = R * 2 + 10
+  let prev = -Infinity
+  const items = legend.map((l) => {
+    const top = base - l.radius * 2
+    const labelY = Math.max(top, prev + 12, 6)
+    prev = labelY
+    return { ...l, cx, cy: base - l.radius, top, labelY, lineEnd }
+  })
+  return { items, height: Math.max(base, prev + 7) + 1 }
+}
+
+/** A round number near x (1, 2 or 5 x 10^n) for the size legend. */
+function niceStep(x: number) {
+  const p = 10 ** Math.floor(Math.log10(x))
+  const f = x / p
+  return (f >= 5 ? 5 : f >= 2 ? 2 : 1) * p
+}
 
 /** Work out where each row goes: direct coordinates, or place names to look up. */
 function planPoints(spec: ChartSpec, result: QueryResult): {

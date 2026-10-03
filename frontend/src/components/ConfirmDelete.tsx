@@ -1,17 +1,43 @@
-import { useEffect, useState } from 'react'
-import { Trash2 } from 'lucide-react'
+import { useRef, useState } from 'react'
+import { Trash2, TriangleAlert } from 'lucide-react'
+import { Popover } from './Popover'
 
-/** Two-step inline delete; avoids a browser confirm() dialog. */
-export function ConfirmDelete({ label, title, onConfirm }: { label: string; title: string; onConfirm: () => void }) {
-  const [armed, setArmed] = useState(false)
-  useEffect(() => {
-    if (!armed) return
-    const t = setTimeout(() => setArmed(false), 4000)
-    return () => clearTimeout(t)
-  }, [armed])
-  return armed ? (
-    <button className="btn danger small" onClick={(e) => { e.preventDefault(); onConfirm() }}>{label}</button>
-  ) : (
-    <button className="icon-btn" title={title} aria-label={title} onClick={(e) => { e.preventDefault(); setArmed(true) }}><Trash2 size={15} /></button>
+/**
+ * Trash icon that opens a small confirmation anchored to it (no browser confirm() dialog, no layout shift).
+ * Cancel has focus, so Enter or Escape never deletes by accident.
+ */
+export function ConfirmDelete({ label, detail, title, confirmText = 'Delete', onConfirm }: {
+  label: string
+  detail?: string
+  title: string
+  confirmText?: string
+  onConfirm: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLButtonElement>(null)
+  return (
+    <>
+      <button ref={ref} className={`icon-btn ${open ? 'active danger-active' : ''}`} title={title} aria-label={title}
+        aria-haspopup="dialog" aria-expanded={open} onClick={(e) => { e.preventDefault(); setOpen((o) => !o) }}>
+        <Trash2 size={15} />
+      </button>
+      {open && (
+        <Popover anchor={ref} onClose={() => setOpen(false)} className="confirm-pop" role="alertdialog" label={label}>
+          <div className="confirm-body">
+            <span className="confirm-icon"><TriangleAlert size={16} aria-hidden /></span>
+            <div>
+              <p className="confirm-title">{label}</p>
+              {detail && <p className="confirm-detail">{detail}</p>}
+            </div>
+          </div>
+          <div className="confirm-actions">
+            <button className="btn ghost small" autoFocus onClick={() => setOpen(false)}>Cancel</button>
+            <button className="btn danger small" onClick={() => { setOpen(false); onConfirm() }}>
+              <Trash2 size={13} aria-hidden /> {confirmText}
+            </button>
+          </div>
+        </Popover>
+      )}
+    </>
   )
 }

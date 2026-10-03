@@ -22,6 +22,10 @@ END = date(2026, 9, 30)
 N_CUSTOMERS = 450
 N_ORDERS = 4500
 CITIES = ["Mumbai", "Bengaluru", "Delhi", "Pune", "Chennai", "Hyderabad"]
+# Markets differ a lot in size, like real sales data: share of customers, and how often they order.
+# Mumbai ends up with roughly 20-30x Chennai's revenue, which maps and rankings make visible.
+CITY_SHARE = {"Mumbai": 38, "Delhi": 24, "Bengaluru": 18, "Hyderabad": 10, "Pune": 6, "Chennai": 4}
+CITY_ACTIVITY = {"Mumbai": 1.4, "Delhi": 1.2, "Bengaluru": 1.0, "Hyderabad": 0.8, "Pune": 0.7, "Chennai": 0.6}
 CATEGORIES = {
     "Electronics": [("Earbuds", 1999), ("Power Bank", 1499), ("Smartwatch", 4999), ("Speaker", 2999)],
     "Home": [("Mixer", 3499), ("Kettle", 1299), ("Lamp", 899)],
@@ -62,15 +66,16 @@ def build(path: Path, seed: int = 42) -> Path:
     customers = []
     for cid in range(1, N_CUSTOMERS + 1):
         customers.append((
-            cid, f"Customer {cid}", rng.choice(CITIES), rng.randint(18, 70),
+            cid, f"Customer {cid}", rng.choices(CITIES, weights=[CITY_SHARE[c] for c in CITIES])[0], rng.randint(18, 70),
             rng.choices([1, 2, 3], weights=[70, 20, 10])[0],
             (START + timedelta(days=rng.randint(0, signup_window))).isoformat(),
         ))
     db.executemany("INSERT INTO customers VALUES (?,?,?,?,?,?)", customers)
 
     iid = 0
+    activity = [CITY_ACTIVITY[c[2]] for c in customers]
     for oid in range(1, N_ORDERS + 1):
-        cust = rng.choice(customers)
+        cust = rng.choices(customers, weights=activity)[0]
         signup = date.fromisoformat(cust[5])
         odate = signup + timedelta(days=rng.randint(0, max(0, (END - signup).days)))
         sts = rng.choices([1, 2, 9], weights=[85, 10, 5])[0]

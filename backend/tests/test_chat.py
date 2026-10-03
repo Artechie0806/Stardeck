@@ -12,21 +12,32 @@ RANGE = {"start": "2025-01-01", "end": "2025-12-31", "compareStart": "2024-01-01
 
 @pytest.fixture
 def scripted(client):
-    """Feed the assistant canned model replies: intent first, then any widget drafts."""
-    def use(*replies):
+    """Feed the assistant canned model replies: intent first, then any widget drafts.
+
+    Router calls are answered separately with `agent` (default builder) and recorded in `routed`.
+    """
+    def use(*replies, agent="builder"):
         queue = list(replies)
 
         def handler(request: httpx.Request) -> httpx.Response:
-            content = json.dumps(queue.pop(0) if len(queue) > 1 else queue[0])
+            body = json.loads(request.content)
+            if body.get("response_format", {}).get("json_schema", {}).get("name") == "Route":
+                use.routed.append(body["messages"][-1]["content"])
+                content = json.dumps({"agent": agent})
+            else:
+                use.prompts.append(body["messages"][0]["content"])
+                use.asked.append(body["messages"][-1]["content"])
+                content = json.dumps(queue.pop(0) if len(queue) > 1 else queue[0])
             return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
 
         client.app.dependency_overrides[get_llm] = lambda: LLMClient(Settings(), transport=httpx.MockTransport(handler))
+    use.routed, use.prompts, use.asked = [], [], []
     yield use
     client.app.dependency_overrides.clear()
 
 
-def say(client, message):
-    res = client.post("/api/dashboards/sales-overview/chat", json={"message": message, **RANGE})
+def say(client, message, **extra):
+    res = client.post("/api/dashboards/sales-overview/chat", json={"message": message, **RANGE, **extra})
     assert res.status_code == 200, res.text
     return res.json()
 
@@ -130,6 +141,82 @@ def test_clarify_then_answer_builds_combined_request(client, scripted):
 def test_model_clarify_returns_options(client, scripted):
     scripted({"intent": "clarify", "reply": "Revenue or number of orders?", "options": ["Revenue?", "Orders", " "]})
     out = say(client, "show sales")
-    assert out == {"text": "Revenue or number of orders?", "options": ["Revenue", "Orders"], "pending": "show sales"}
+    assert out == {"text": "Revenue or number of orders?", "options": ["Revenue", "Orders"], "pending": "show sales",
+                   "agent": "builder"}
     scripted({"intent": "clarify", "reply": "", "options": ["A", "B"]})
     assert say(client, "show sales")["text"] == "Which of these did you mean?"
+
+
+# ---------- router + analyst ----------
+
+def test_router_sends_questions_to_the_analyst(client, scripted, demo_db):
+    sql = ("SELECT c.city, SUM(o.amt) / 100.0 AS revenue FROM orders o JOIN customers c ON c.id = o.customer_id "
+           "WHERE o.sts = 1 AND o.order_date LIKE '2025%' GROUP BY c.city ORDER BY revenue DESC LIMIT 1")
+    scripted({"thought": "Need revenue per city in 2025.", "action": "query", "sql": sql},
+             {"thought": "Got it.", "action": "answer", "answer": "**Mumbai** led 2025.",
+              "chart_request": "Revenue by city in 2025", "follow_ups": ["How did Delhi do?"]},
+             agent="analyst")
+    out = say(client, "which city brought in the most revenue last year?")
+    assert out["agent"] == "analyst" and "Mumbai" in out["text"]
+    assert scripted.routed == ["which city brought in the most revenue last year?"]
+    a = out["analysis"]
+    assert a["queries"] == [{"sql": sql, "rows": 1}] and a["evidence"]["rows"][0][0] == "Mumbai"
+    assert a["chartRequest"] == "Revenue by city in 2025" and out["options"] == ["How did Delhi do?"]
+    assert "proposal" not in out  # the analyst never changes the dashboard
+    # Its prompt is the analyst's, with today's date and the dashboard period; not the builder's intents.
+    assert "careful data analyst" in scripted.prompts[0] and "2025-01-01 to 2025-12-31" in scripted.prompts[0]
+    assert "add_widget" not in scripted.prompts[0]
+
+
+def test_analyst_must_look_at_data_and_recovers_from_bad_sql(client, scripted):
+    scripted({"thought": "I know this.", "action": "answer", "answer": "About 42."},
+             {"thought": "Query.", "action": "query", "sql": "SELECT nope FROM orders"},
+             {"thought": "Fix.", "action": "query", "sql": "SELECT COUNT(*) AS n FROM orders"},
+             {"thought": "Done.", "action": "answer", "answer": "There are **4,500** orders."},
+             agent="analyst")
+    out = say(client, "how many orders are there?")
+    assert out["text"] == "There are **4,500** orders."
+    assert [q["rows"] for q in out["analysis"]["queries"]] == [1]  # only the query that ran
+
+
+def test_analyst_refuses_double_counting(client, scripted):
+    fanout = ("SELECT SUM(o.amt) AS total FROM orders o JOIN order_items i ON i.order_id = o.id")
+    scripted({"thought": "q", "action": "query", "sql": fanout},
+             {"thought": "q", "action": "query", "sql": "SELECT SUM(amt) AS total FROM orders"},
+             {"thought": "a", "action": "answer", "answer": "Total is **X**."}, agent="analyst")
+    out = say(client, "what is total order value?")
+    assert [q["sql"] for q in out["analysis"]["queries"]] == ["SELECT SUM(amt) AS total FROM orders"]
+
+
+def test_button_and_pending_skip_the_router(client, scripted):
+    scripted({"intent": "define_column", "column": "sts", "description": "Order status"})
+    assert say(client, "sts is the order status", agent="builder")["agent"] == "builder"
+    say(client, "Month by month", pending="year on year revenue difference")
+    assert scripted.routed == []  # neither message needed the router
+
+
+def test_prose_in_place_of_sql_is_rejected_not_a_crash(client, scripted):
+    # Untokenizable text (an unclosed quote) used to raise sqlglot's TokenError past every check.
+    scripted({"thought": "q", "action": "query", "sql": " Let's query to confirm the codes"},
+             {"thought": "q", "action": "query", "sql": "SELECT COUNT(*) AS n FROM orders"},
+             {"thought": "a", "action": "answer", "answer": "There are **4,500** orders."}, agent="analyst")
+    assert say(client, "how many orders?")["text"] == "There are **4,500** orders."
+
+
+def test_analyst_gets_lakh_crore_readings_and_leaked_follow_ups_are_moved(client, scripted):
+    from stardeck.analyst import _as_text, _split_follow_ups
+    from stardeck.query import QueryResult
+    text = _as_text(QueryResult(columns=["year", "revenue"], rows=[["2026", 18584215.0], ["2025", 934000.5]]))
+    assert "18584215 (= 1.86 crore)" in text and "934000.5 (= 9.34 lakh)" in text and "2026" in text
+    answer, ups = _split_follow_ups('Mumbai led.\n\nfollow_ups: ["How did Delhi do?", "And last year?"]')
+    assert answer == "Mumbai led." and ups == ["How did Delhi do?", "And last year?"]
+
+
+def test_add_as_chart_builds_from_the_analysts_query(client, scripted):
+    basis = "SELECT c.city, SUM(o.amt) / 100.0 AS revenue FROM orders o JOIN customers c ON c.id = o.customer_id GROUP BY 1"
+    draft = {"reasoning": "r", "title": "Revenue by city", "summary": "Revenue per city.", "chart_type": "bar",
+             "x": "city", "y": "revenue", "sql": basis}
+    scripted(draft)
+    out = say(client, "Add a chart: Revenue by city", agent="builder", basisSql=basis)
+    assert out["proposal"]["kind"] == "add_widget" and scripted.routed == []
+    assert basis in scripted.asked[0]  # the builder was told to start from the analyst's query

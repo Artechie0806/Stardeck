@@ -104,6 +104,10 @@ class ChatRequest(RunRequest):
     history: list[ChatTurn] = Field(default_factory=list)
     # The request the assistant asked a clarifying question about; the message is the answer.
     pending: str | None = Field(None, max_length=4000)
+    # Set by buttons that already know the agent (e.g. "Add as chart" on an analyst answer).
+    agent: Literal["builder", "analyst"] | None = None
+    # "Add as chart" on an analyst answer: the query behind it, so the chart shows the same numbers.
+    basis_sql: str | None = Field(None, max_length=4000)
 
 
 class GenerateRequest(ApiModel):
@@ -286,6 +290,7 @@ def chat(dashboard_id: str, req: ChatRequest, state: StateDep, db: SessionDep, l
     try:
         return Assistant(state.sources).respond(
             llm, rec, src, req.message, [h.model_dump() for h in req.history],
-            to_range(req.start, req.end), to_range(req.compare_start, req.compare_end), pending=req.pending)
+            to_range(req.start, req.end), to_range(req.compare_start, req.compare_end), pending=req.pending,
+            agent=req.agent, basis_sql=req.basis_sql)
     except LLMError as exc:
         raise HTTPException(503, f"The AI model is not available: {exc}") from exc

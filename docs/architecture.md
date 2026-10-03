@@ -26,7 +26,9 @@ everything else.** Small local models are reliable when every step is narrow and
 | `transforms.py` | Prepared tables: step models, a type-aware compiler to SQL (one CTE per step), CTE injection into queries, AI step drafts. |
 | `labels.py` | AI-shortened chart labels, validated and cached. |
 | `dashboards.py` | Storage, automatic layout, parallel cached execution, AI dashboard generation. |
-| `chat.py` | The assistant: intent classification → validated proposals. |
+| `router.py` | Picks the agent for a chat message (one small model call). |
+| `chat.py` | The assistant: routes to the builder (intent classification → validated proposals) or the analyst. |
+| `analyst.py` | The data analyst: read-only queries step by step → an answer backed by their results. |
 | `auth.py` | Optional shared password with cookie sessions. |
 
 ## The widget engine
@@ -69,6 +71,21 @@ schema with their recipe as a description; their columns inherit meanings from t
 Recipes that drop rows are hidden from the AI unless a request names them.
 
 ## The assistant
+
+Two agents share the chat box, each with its own focused prompt. A router (`router.py`, one tiny
+schema-constrained call) picks one per message. Conversation state can skip the router: an answer to
+the builder's own question, or "Add as chart" on an analyst answer.
+
+- **Builder**: changes the dashboard. Described below.
+- **Analyst** (`analyst.py`): answers questions about the data. It runs up to 3 read-only queries one
+  step at a time, through the same safety and double-counting checks as widgets, then answers using
+  only numbers from those results. Large numbers reach the model with their lakh/crore reading
+  attached, because small models get those conversions wrong. The reply carries its evidence (the
+  last result and the queries), follow-up questions, and an optional chart request. "Add as chart"
+  passes that request to the builder together with the analyst's query, so the chart shows the same
+  numbers as the answer.
+
+### Builder
 
 One schema-constrained call classifies the message (add, modify, change chart type, rename,
 remove, define a column, explain, clarify) and extracts its parts. Widget work reuses the widget

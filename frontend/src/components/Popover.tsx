@@ -16,13 +16,14 @@ function bottomLimit() {
  * It opens below the anchor (or above, when there's more room there), stays inside the viewport and above the
  * phone tab bar, closes on outside click / Escape, and supports arrow-key navigation between items.
  */
-export function Popover({ anchor, onClose, children, align = 'end', className = '', label }: {
+export function Popover({ anchor, onClose, children, align = 'end', className = '', label, role = 'menu' }: {
   anchor: RefObject<HTMLElement | null>
   onClose: () => void
   children: ReactNode
   align?: 'start' | 'end'
   className?: string
   label?: string
+  role?: string
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<{ top: number; left: number; maxHeight: number } | null>(null)
@@ -52,7 +53,7 @@ export function Popover({ anchor, onClose, children, align = 'end', className = 
       if (!ref.current?.contains(t) && !anchor.current?.contains(t)) closeRef.current()
     }
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { closeRef.current(); anchor.current?.focus() }
+      if (e.key === 'Escape') { e.preventDefault(); closeRef.current(); anchor.current?.focus() } // handled: the assistant stays open
       if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
       const items = [...(ref.current?.querySelectorAll<HTMLElement>('.menu-item:not(:disabled)') ?? [])]
       if (!items.length) return
@@ -79,7 +80,7 @@ export function Popover({ anchor, onClose, children, align = 'end', className = 
   }, [anchor, align])
 
   return createPortal(
-    <div ref={ref} className={`menu floating ${className}`} role="menu" aria-label={label}
+    <div ref={ref} className={`menu floating ${className}`} role={role} aria-label={label}
       style={pos ? { top: pos.top, left: pos.left, maxHeight: pos.maxHeight } : { top: -9999, left: -9999 }}>
       {children}
     </div>,

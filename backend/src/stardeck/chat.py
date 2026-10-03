@@ -1,8 +1,11 @@
-"""The dashboard assistant: understand a message, then propose a change for the user to confirm.
+"""The dashboard assistant: two agents behind one chat box.
 
-The model only classifies the request and extracts its parts (one schema-constrained call);
-building widgets reuses the widget engine. Proposals are validated against the real schema and
-dashboard before they're shown, and nothing is applied until the user confirms.
+A router (one tiny model call, see router.py) sends each message to:
+- the builder: classifies the request and extracts its parts (one schema-constrained call);
+  building widgets reuses the widget engine. Proposals are validated against the real schema and
+  dashboard before they're shown, and nothing is applied until the user confirms;
+- the analyst (analyst.py): answers questions about the data with read-only queries.
+Each agent has its own focused prompt.
 """
 
 import re
@@ -12,10 +15,12 @@ import sqlglot
 from pydantic import BaseModel, Field
 from sqlglot import exp
 
+from stardeck.analyst import analyse
 from stardeck.charts import ChartType, Stack
 from stardeck.db import DashboardRecord, SourceRecord
 from stardeck.llm import LLMClient
 from stardeck.query import DateRange, QueryError, UnsafeSQLError, run_widget_query
+from stardeck.router import Agent, route
 from stardeck.sources import SourceService
 from stardeck.widgets import WidgetError, WidgetResult, generate_widget
 
@@ -104,7 +109,7 @@ def _unknown_columns_used(sql: str, dialect: str, src: SourceService, rec: Sourc
     """Flagged, undefined columns the query relies on, so the assistant can ask about them."""
     try:
         used = {c.name.lower() for c in sqlglot.parse_one(sql, read=dialect).find_all(exp.Column)}
-    except sqlglot.errors.ParseError:
+    except sqlglot.errors.SqlglotError:
         return []
     out = src.to_out(rec)
     return [f"{t.name}.{c.name}" for t in out.tables for c in t.columns
@@ -162,7 +167,40 @@ class Assistant:
 
     def respond(self, llm: LLMClient, dash: DashboardRecord, src: SourceRecord, message: str,
                 history: list[dict], rng: DateRange | None, compare: DateRange | None,
-                pending: str | None = None) -> dict:
+                pending: str | None = None, agent: Agent | None = None, basis_sql: str | None = None) -> dict:
+        """Route the message to the builder or the analyst; the reply says which one answered.
+
+        `pending` (the builder's open question) and `agent` (set by a button, e.g. "Add as chart")
+        already decide the agent; otherwise the router model does.
+        """
+        if not agent:
+            agent = "builder" if pending else route(llm, message, history, [w["title"] for w in dash.widgets or []])
+        if agent == "analyst":
+            return {**self._analyse(llm, src, message, history, rng), "agent": "analyst"}
+        if basis_sql:  # a chart of an analyst answer: start from its checked query, skip classification
+            request = (f"{message}\nStart from this query; it already returns the right numbers. Keep its "
+                       f"filters and logic, and only reshape it for the chart:\n{basis_sql}")
+            return {**self._build(llm, src, request, rng, compare, None), "agent": "builder"}
+        return {**self._builder(llm, dash, src, message, history, rng, compare, pending), "agent": "builder"}
+
+    def _analyse(self, llm: LLMClient, src: SourceRecord, question: str, history: list[dict],
+                 rng: DateRange | None) -> dict:
+        svc = self.sources
+        a = analyse(llm, svc.engine(src), svc.dialect(src), svc.tables(src), svc.effective_definitions(src),
+                    question, history, rng, prepared=svc.prepared(src), timeout_s=svc.settings.query_timeout_s)
+        out: dict = {"text": a.answer, "analysis": {
+            "queries": a.queries,
+            "evidence": {"columns": a.evidence.columns, "rows": a.evidence.rows, "truncated": a.evidence.truncated}
+            if a.evidence else None,
+            "chartRequest": a.chart_request,
+        }}
+        if a.follow_ups:
+            out["options"] = a.follow_ups
+        return out
+
+    def _builder(self, llm: LLMClient, dash: DashboardRecord, src: SourceRecord, message: str,
+                 history: list[dict], rng: DateRange | None, compare: DateRange | None,
+                 pending: str | None = None) -> dict:
         """`pending` is the request the assistant last asked a question about; the message answers it."""
         answered = bool(pending)
         if pending:

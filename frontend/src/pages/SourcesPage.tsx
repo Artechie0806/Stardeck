@@ -88,7 +88,9 @@ export function SourcesPage() {
                     onClick={() => refresh(s.id)}>
                     <RefreshCw size={15} className={busy === s.id ? 'spin' : ''} />
                   </button>
-                  <ConfirmDelete label={`Remove ${s.name} and its dashboards?`} title="Remove data source" onConfirm={() => remove(s)} />
+                  <ConfirmDelete label={`Remove “${s.name}”?`} title="Remove data source" confirmText="Remove"
+                    detail="Its dashboards and prepared tables are deleted too. Your database or files aren’t touched."
+                    onConfirm={() => remove(s)} />
                 </div>
               </div>
               <h2>{s.name}</h2>

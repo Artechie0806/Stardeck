@@ -21,9 +21,11 @@ interface Props {
   onRunSql: (w: Widget, sql: string) => Promise<QueryResult>
   onSaveSql: (id: string, sql: string) => Promise<void>
   onAsk?: (text: string) => void
+  /** A widget to highlight briefly (e.g. one the assistant just added). */
+  highlightId?: string
 }
 
-export function DashboardGrid({ widgets, preset, editing, readOnly = false, onLayoutChange, onRemove, onChangeType, onRunSql, onSaveSql, onAsk }: Props) {
+export function DashboardGrid({ widgets, preset, editing, readOnly = false, onLayoutChange, onRemove, onChangeType, onRunSql, onSaveSql, onAsk, highlightId }: Props) {
   const { width, containerRef, mounted } = useContainerWidth()
   const layout = useMemo<Layout>(
     () => widgets.map((w) => ({
@@ -47,7 +49,8 @@ export function DashboardGrid({ widgets, preset, editing, readOnly = false, onLa
     return (
       <div ref={containerRef} className="grid-stack">
         {ordered.map((w) => (
-          <div key={w.id} className={w.spec.type === 'kpi' ? 'stack-kpi' : 'stack-chart'}
+          <div key={w.id} data-widget-id={w.id}
+            className={`${w.spec.type === 'kpi' ? 'stack-kpi' : 'stack-chart'}${w.id === highlightId ? ' flash' : ''}`}
             style={w.spec.type === 'kpi' ? undefined : { height: Math.max(280, Math.min(w.layout.h * ROW_HEIGHT + (w.layout.h - 1) * MARGIN, 420)) }}>
             {card(w)}
           </div>
@@ -71,7 +74,7 @@ export function DashboardGrid({ widgets, preset, editing, readOnly = false, onLa
             onLayoutChange(out)
           }}
         >
-          {widgets.map((w) => <div key={w.id}>{card(w)}</div>)}
+          {widgets.map((w) => <div key={w.id} data-widget-id={w.id} className={w.id === highlightId ? 'flash' : undefined}>{card(w)}</div>)}
         </ReactGridLayout>
       )}
     </div>

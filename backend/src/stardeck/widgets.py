@@ -190,7 +190,7 @@ def compares_periods(sql: str, dialect: str, request: str = "") -> bool:
         return True
     try:
         tree = sqlglot.parse_one(sql, read=dialect)
-    except sqlglot.errors.ParseError:
+    except sqlglot.errors.SqlglotError:
         return False
     return any(isinstance(w.this, (exp.Lag, exp.Lead)) for w in tree.find_all(exp.Window))
 
@@ -293,7 +293,7 @@ def infer_currency(spec: dict, sql: str, dialect: str, tables: list[TableInfo], 
         return spec
     try:
         tree = sqlglot.parse_one(sql, read=dialect)
-    except sqlglot.errors.ParseError:
+    except sqlglot.errors.SqlglotError:
         return spec
     # Only value-preserving aggregates carry the unit; COUNT(amt) is a count, not money.
     names = {c.name.lower() for agg in tree.find_all(exp.Sum, exp.Avg, exp.Min, exp.Max)

@@ -51,7 +51,7 @@ def check_fanout(sql: str, dialect: str, tables: list[TableInfo]) -> str | None:
     columns_of = {t.name.lower(): {c.name.lower() for c in t.columns} for t in tables}
     try:
         tree = sqlglot.parse_one(sql, read=dialect)
-    except sqlglot.errors.ParseError:
+    except sqlglot.errors.SqlglotError:
         return None
     for select in tree.find_all(exp.Select):
         sources = []
@@ -89,7 +89,7 @@ def measured_tables(sql: str, dialect: str) -> list[str]:
     """Base tables whose columns are aggregated (COUNT(*) counts the FROM table), outermost first."""
     try:
         tree = sqlglot.parse_one(sql, read=dialect)
-    except sqlglot.errors.ParseError:
+    except sqlglot.errors.SqlglotError:
         return []
     found: list[str] = []
     for select in tree.find_all(exp.Select):

@@ -80,11 +80,11 @@ function kit(spec: ChartSpec, c: ChartColors, ctx: ChartContext) {
     top: 0, left: 0, icon: 'rect', itemWidth: 10, itemHeight: 10, itemGap: 14, type: 'plain' as const,
     textStyle: { ...text }, formatter: ctx.short,
   } : { show: false })
-  /** Vertical space the wrapped legend takes, so the plot starts below it. */
-  const legendHeight = (names: string[]) => {
+  /** Vertical space the wrapped legend takes, so the plot starts below it. `extra`: characters added to each name. */
+  const legendHeight = (names: string[], extra = 0) => {
     let rows = 1, used = 0
     for (const n of names) {
-      const w = ctx.short(n).length * CHAR_PX + 24 + 14
+      const w = (ctx.short(n).length + extra) * CHAR_PX + 24 + 14
       if (used + w > ctx.width && used > 0) { rows++; used = 0 }
       used += w
     }
@@ -263,7 +263,9 @@ function pie(spec: ChartSpec, result: QueryResult, roles: Roles, c: ChartColors,
     legend: { ...k.legend(true), type: 'plain', top: undefined, bottom: 0, left: 'center',
       formatter: (name: string) => `${k.short(name)}  ${Math.round(((items.find((i) => i.name === name)?.value ?? 0) / total) * 100)}%` },
     series: [{
-      type: 'pie', radius: spec.type === 'donut' ? ['52%', '76%'] : [0, '76%'], center: ['50%', '45%'],
+      // The pie fills the space above the (possibly wrapped) legend, so the two never overlap.
+      bottom: k.legendHeight(items.map((i) => i.name), 6),
+      type: 'pie', radius: spec.type === 'donut' ? ['54%', '82%'] : [0, '82%'], center: ['50%', '50%'],
       itemStyle: { borderColor: c.surface, borderWidth: 2, borderRadius: spec.type === 'donut' ? 4 : 0 },
       label: { show: false }, emphasis: { scale: true, scaleSize: 4 }, data: items,
     }],

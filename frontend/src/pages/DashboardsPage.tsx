@@ -56,7 +56,7 @@ export function DashboardsPage() {
           <div key={d.id} className="dash-card linked">
             <div className="card-top">
               <span className="icon-tile"><LayoutDashboard size={19} aria-hidden /></span>
-              <ConfirmDelete label="Delete dashboard?" title="Delete dashboard" onConfirm={() => remove(d.id)} />
+              <ConfirmDelete label={`Delete “${d.name}”?`} detail="Its widgets are deleted too. This can’t be undone." title="Delete dashboard" onConfirm={() => remove(d.id)} />
             </div>
             {/* The title is the link; its ::after stretches over the card, so the delete button isn't nested in it. */}
             <h2><Link to={`/d/${d.id}`} className="card-link">{d.name}</Link></h2>

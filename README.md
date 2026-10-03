@@ -17,7 +17,9 @@ Your data and your AI never leave your network.
 
 - **One-click dashboards.** An AI planner picks 6–9 useful widgets (KPIs, trends, breakdowns,
   top-N tables), builds each one, and lays them out. About 30–40 s with a 9B model.
-- **A dashboard assistant.** Add, change, rename, remove or explain widgets in plain English.
+- **A dashboard assistant with two agents.** The *dashboard builder* adds, changes, renames, removes or explains
+  widgets in plain English. The *data analyst* answers questions ("which city grew fastest?") with real
+  queries, shows its numbers and working, and can turn an answer into a chart.
   Every change is shown as a preview you confirm; nothing is applied behind your back.
 - **Explain your data once.** Cryptic columns like `col1`, codes like `sts = 9` and units like
   paise are flagged automatically. Describe them on the Definitions page or in chat (or let the AI

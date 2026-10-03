@@ -18,9 +18,14 @@ echarts.use([
   VisualMapComponent, SVGRenderer,
 ])
 
+/** Width in 10px steps: small jitter doesn't rebuild the option. */
+const step = (px: number) => Math.round(px / 10) * 10
+
 export function EChart({ spec, result }: { spec: ChartSpec; result: QueryResult }) {
   const ref = useRef<HTMLDivElement>(null)
-  const chart = useRef<echarts.ECharts | null>(null)
+  // The instance is handed over (as state) once the observer has measured it, and the option is applied to
+  // whichever instance is current, so drawing never depends on the width *changing* after a (re)mount.
+  const [chart, setChart] = useState<echarts.ECharts | null>(null)
   const { resolved } = useTheme()
   // Width decides whether category labels fit flat, need tilting, or must thin out.
   const [width, setWidth] = useState(0)
@@ -33,29 +38,31 @@ export function EChart({ spec, result }: { spec: ChartSpec; result: QueryResult 
   const short = useShortLabels(labels)
 
   useEffect(() => {
-    if (!ref.current) return
-    const instance = echarts.init(ref.current, undefined, { renderer: 'svg' })
-    chart.current = instance
+    const el = ref.current
+    if (!el) return
+    const instance = echarts.init(el, undefined, { renderer: 'svg' })
     const observer = new ResizeObserver((entries) => {
       instance.resize()
-      setWidth(Math.round(entries[0].contentRect.width / 10) * 10)
+      setWidth(step(entries[0].contentRect.width))
+      setChart(instance) // the first report hands over a measured instance; later ones are no-ops
     })
-    observer.observe(ref.current)
+    observer.observe(el)
     return () => {
       observer.disconnect()
       instance.dispose()
-      chart.current = null
+      setChart((c) => (c === instance ? null : c))
     }
   }, [])
 
   useEffect(() => {
+    // No width yet (e.g. mounted while hidden): the observer reports one once the chart is shown.
+    if (!chart || !width) return
     // Re-read tokens whenever the theme flips so dark mode gets its own validated steps.
-    if (!width) return
     const option = buildOption(spec, result, readChartColors(), { width, short })
     // Respect the OS "reduce motion" setting: no entry animations.
     const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    chart.current?.setOption(still ? { ...option, animation: false } : option, { notMerge: true })
-  }, [spec, result, resolved, width, short])
+    chart.setOption(still ? { ...option, animation: false } : option, { notMerge: true })
+  }, [chart, spec, result, resolved, width, short])
 
   return <div ref={ref} className="echart" role="img" aria-label={`${spec.type} chart`} />
 }
