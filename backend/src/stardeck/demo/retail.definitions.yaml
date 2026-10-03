@@ -1,0 +1,27 @@
+database:
+  description: Demo retail store sales, January 2024 to September 2026. Money in orders.amt is stored in paise (divide by 100 for INR).
+tables:
+  customers:
+    description: People who have signed up to the store.
+    columns:
+      col1: {description: Customer age, unit: years}
+      sgmt: {description: Customer segment, values: {1: Retail, 2: Wholesale, 3: Corporate}}
+  orders:
+    description: One row per order placed.
+    columns:
+      sts: {description: Order status, values: {1: Completed, 2: Cancelled, 9: Refunded}}
+      amt: {description: Order total, unit: paise}
+  products:
+    columns:
+      price: {description: List price, unit: INR}
+  order_items:
+    columns:
+      unit_price: {description: Price per unit at time of order, unit: INR}
+glossary:
+  - term: revenue
+    definition: >-
+      Money from completed orders only (orders.sts = 1), in INR. Per order or in total:
+      SUM(orders.amt) / 100.0. Per product or category: SUM(order_items.qty * order_items.unit_price),
+      which is already in INR.
+  - term: average order value
+    definition: Revenue divided by the number of completed orders.

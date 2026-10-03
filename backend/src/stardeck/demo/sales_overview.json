@@ -1,0 +1,205 @@
+{
+  "id": "sales-overview",
+  "name": "Sales overview",
+  "description": "Revenue, orders and customers at a glance.",
+  "sourceId": "retail-demo",
+  "datePreset": "this_year",
+  "widgets": [
+    {
+      "id": "kpi_revenue",
+      "title": "Revenue",
+      "summary": "Total value of completed orders, in rupees.",
+      "sql": "SELECT SUM(o.amt) / 100.0 AS revenue FROM orders o WHERE o.sts = 1",
+      "spec": {
+        "type": "kpi",
+        "format": "currency",
+        "currency": "INR"
+      },
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "w": 3,
+        "h": 4
+      },
+      "dateFilter": {
+        "table": "orders",
+        "column": "order_date"
+      }
+    },
+    {
+      "id": "kpi_orders",
+      "title": "Completed orders",
+      "summary": "Number of orders that were completed (not cancelled or refunded).",
+      "sql": "SELECT COUNT(*) AS orders FROM orders o WHERE o.sts = 1",
+      "spec": {
+        "type": "kpi",
+        "format": "number"
+      },
+      "layout": {
+        "x": 3,
+        "y": 0,
+        "w": 3,
+        "h": 4
+      },
+      "dateFilter": {
+        "table": "orders",
+        "column": "order_date"
+      }
+    },
+    {
+      "id": "kpi_aov",
+      "title": "Average order value",
+      "summary": "Revenue divided by the number of completed orders.",
+      "sql": "SELECT SUM(o.amt) / 100.0 / COUNT(*) AS aov FROM orders o WHERE o.sts = 1",
+      "spec": {
+        "type": "kpi",
+        "format": "currency",
+        "currency": "INR"
+      },
+      "layout": {
+        "x": 6,
+        "y": 0,
+        "w": 3,
+        "h": 4
+      },
+      "dateFilter": {
+        "table": "orders",
+        "column": "order_date"
+      }
+    },
+    {
+      "id": "kpi_refund_rate",
+      "title": "Refund rate",
+      "summary": "Share of all orders that were refunded.",
+      "sql": "SELECT 100.0 * SUM(CASE WHEN o.sts = 9 THEN 1 ELSE 0 END) / COUNT(*) AS refund_rate FROM orders o",
+      "spec": {
+        "type": "kpi",
+        "format": "percent",
+        "upIsGood": false
+      },
+      "layout": {
+        "x": 9,
+        "y": 0,
+        "w": 3,
+        "h": 4
+      },
+      "dateFilter": {
+        "table": "orders",
+        "column": "order_date"
+      }
+    },
+    {
+      "id": "revenue_trend",
+      "title": "Revenue by month",
+      "summary": "Completed-order revenue for each month.",
+      "sql": "SELECT strftime('%Y-%m', o.order_date) AS month, SUM(o.amt) / 100.0 AS revenue\nFROM orders o WHERE o.sts = 1\nGROUP BY month ORDER BY month",
+      "spec": {
+        "type": "area",
+        "x": "month",
+        "y": "revenue",
+        "format": "currency",
+        "currency": "INR"
+      },
+      "layout": {
+        "x": 0,
+        "y": 4,
+        "w": 8,
+        "h": 8
+      },
+      "dateFilter": {
+        "table": "orders",
+        "column": "order_date"
+      }
+    },
+    {
+      "id": "revenue_by_segment",
+      "title": "Revenue by customer segment",
+      "summary": "How revenue splits across Retail, Wholesale and Corporate customers.",
+      "sql": "SELECT CASE c.sgmt WHEN 1 THEN 'Retail' WHEN 2 THEN 'Wholesale' WHEN 3 THEN 'Corporate' END AS segment, SUM(o.amt) / 100.0 AS revenue\nFROM orders o JOIN customers c ON c.id = o.customer_id\nWHERE o.sts = 1\nGROUP BY c.sgmt ORDER BY revenue DESC",
+      "spec": {
+        "type": "donut",
+        "x": "segment",
+        "y": "revenue",
+        "format": "currency",
+        "currency": "INR"
+      },
+      "layout": {
+        "x": 8,
+        "y": 4,
+        "w": 4,
+        "h": 8
+      },
+      "dateFilter": {
+        "table": "orders",
+        "column": "order_date"
+      }
+    },
+    {
+      "id": "revenue_by_category",
+      "title": "Revenue by product category",
+      "summary": "Revenue from completed orders, split by product category.",
+      "sql": "SELECT p.category, SUM(oi.qty * oi.unit_price) AS revenue\nFROM order_items oi JOIN orders o ON o.id = oi.order_id\nJOIN products p ON p.id = oi.product_id\nWHERE o.sts = 1\nGROUP BY p.category ORDER BY revenue DESC",
+      "spec": {
+        "type": "bar",
+        "x": "category",
+        "y": "revenue",
+        "format": "currency",
+        "currency": "INR"
+      },
+      "layout": {
+        "x": 0,
+        "y": 12,
+        "w": 6,
+        "h": 7
+      },
+      "dateFilter": {
+        "table": "orders",
+        "column": "order_date"
+      }
+    },
+    {
+      "id": "revenue_by_city",
+      "title": "Revenue by city",
+      "summary": "Which cities bring in the most revenue.",
+      "sql": "SELECT c.city, SUM(o.amt) / 100.0 AS revenue\nFROM orders o JOIN customers c ON c.id = o.customer_id\nWHERE o.sts = 1\nGROUP BY c.city ORDER BY revenue DESC",
+      "spec": {
+        "type": "hbar",
+        "x": "city",
+        "y": "revenue",
+        "format": "currency",
+        "currency": "INR"
+      },
+      "layout": {
+        "x": 6,
+        "y": 12,
+        "w": 6,
+        "h": 7
+      },
+      "dateFilter": {
+        "table": "orders",
+        "column": "order_date"
+      }
+    },
+    {
+      "id": "top_products",
+      "title": "Top 10 products",
+      "summary": "Best-selling products from completed orders, ranked by revenue.",
+      "sql": "SELECT p.name AS product, p.category, SUM(oi.qty) AS units,\n       SUM(oi.qty * oi.unit_price) AS revenue\nFROM order_items oi JOIN orders o ON o.id = oi.order_id\nJOIN products p ON p.id = oi.product_id\nWHERE o.sts = 1\nGROUP BY p.id ORDER BY revenue DESC LIMIT 10",
+      "spec": {
+        "type": "table",
+        "format": "currency",
+        "currency": "INR"
+      },
+      "layout": {
+        "x": 0,
+        "y": 19,
+        "w": 12,
+        "h": 8
+      },
+      "dateFilter": {
+        "table": "orders",
+        "column": "order_date"
+      }
+    }
+  ]
+}

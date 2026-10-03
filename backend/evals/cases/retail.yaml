@@ -1,0 +1,140 @@
+# Eval cases for the retail sample DB. `needs_definitions: true` marks questions that
+# are hard or impossible without the semantic layer (cryptic columns, codes, units).
+# The DB is built on demand from stardeck.demo.retail; definitions ship with it.
+database: .cache/retail.sqlite
+definitions: ../src/stardeck/demo/retail.definitions.yaml
+cases:
+  - id: total_customers
+    chart: kpi
+    question: How many customers do we have?
+    gold_sql: SELECT COUNT(*) FROM customers
+
+  - id: customers_by_city
+    chart: bar|hbar|donut|pie|treemap|map
+    question: Number of customers in each city
+    gold_sql: SELECT city, COUNT(*) FROM customers GROUP BY city
+
+  - id: products_per_category
+    question: How many products are in each category?
+    gold_sql: SELECT category, COUNT(*) FROM products GROUP BY category
+
+  - id: orders_per_month_2025
+    chart: line|area|bar
+    question: Number of orders per month in 2025
+    gold_sql: >
+      SELECT strftime('%Y-%m', order_date) AS month, COUNT(*) FROM orders
+      WHERE order_date >= '2025-01-01' AND order_date < '2026-01-01' GROUP BY month
+    also_accept:  # "orders" may reasonably mean completed orders only
+      - >
+        SELECT strftime('%Y-%m', order_date) AS month, COUNT(*) FROM orders
+        WHERE sts = 1 AND order_date >= '2025-01-01' AND order_date < '2026-01-01' GROUP BY month
+
+  - id: top5_products_by_units
+    chart: bar|hbar|table
+    question: Top 5 products by total units sold
+    gold_sql: >
+      SELECT p.name, SUM(oi.qty) AS units FROM order_items oi JOIN products p ON p.id = oi.product_id
+      GROUP BY p.name ORDER BY units DESC LIMIT 5
+    also_accept:  # "sold" may reasonably exclude cancelled and refunded orders
+      - >
+        SELECT p.name, SUM(oi.qty) AS units FROM order_items oi JOIN orders o ON o.id = oi.order_id
+        JOIN products p ON p.id = oi.product_id WHERE o.sts = 1 GROUP BY p.name ORDER BY units DESC LIMIT 5
+    ordered: true
+
+  - id: total_revenue
+    chart: kpi
+    question: What is our total revenue in rupees?
+    gold_sql: SELECT SUM(amt) / 100.0 FROM orders WHERE sts = 1
+    needs_definitions: true
+
+  - id: revenue_by_month_2025
+    chart: line|area|bar
+    question: Revenue by month for 2025
+    gold_sql: >
+      SELECT strftime('%Y-%m', order_date) AS month, SUM(amt) / 100.0 FROM orders
+      WHERE sts = 1 AND order_date >= '2025-01-01' AND order_date < '2026-01-01' GROUP BY month
+    needs_definitions: true
+
+  - id: cancelled_orders
+    question: How many orders were cancelled?
+    gold_sql: SELECT COUNT(*) FROM orders WHERE sts = 2
+    needs_definitions: true
+
+  - id: refund_rate
+    chart: kpi|gauge
+    question: What percentage of orders were refunded?
+    gold_sql: SELECT 100.0 * SUM(CASE WHEN sts = 9 THEN 1 ELSE 0 END) / COUNT(*) FROM orders
+    needs_definitions: true
+
+  - id: avg_customer_age
+    question: What is the average age of our customers?
+    gold_sql: SELECT AVG(col1) FROM customers
+    needs_definitions: true
+
+  - id: customers_by_segment
+    chart: bar|hbar|donut|pie|treemap
+    question: How many customers are in each segment? Show segment names.
+    gold_sql: >
+      SELECT CASE sgmt WHEN 1 THEN 'Retail' WHEN 2 THEN 'Wholesale' WHEN 3 THEN 'Corporate' END,
+      COUNT(*) FROM customers GROUP BY sgmt
+    needs_definitions: true
+
+  - id: revenue_by_city
+    question: Revenue by customer city
+    gold_sql: >
+      SELECT c.city, SUM(o.amt) / 100.0 FROM orders o JOIN customers c ON c.id = o.customer_id
+      WHERE o.sts = 1 GROUP BY c.city
+    needs_definitions: true
+
+  - id: aov_by_segment
+    question: Average order value by customer segment
+    gold_sql: >
+      SELECT CASE c.sgmt WHEN 1 THEN 'Retail' WHEN 2 THEN 'Wholesale' WHEN 3 THEN 'Corporate' END,
+      SUM(o.amt) / 100.0 / COUNT(*) FROM orders o JOIN customers c ON c.id = o.customer_id
+      WHERE o.sts = 1 GROUP BY c.sgmt
+    needs_definitions: true
+
+  - id: revenue_by_category
+    chart: bar|hbar|donut|pie|treemap
+    question: Revenue by product category from completed orders
+    gold_sql: >
+      SELECT p.category, SUM(oi.qty * oi.unit_price) FROM order_items oi
+      JOIN orders o ON o.id = oi.order_id JOIN products p ON p.id = oi.product_id
+      WHERE o.sts = 1 GROUP BY p.category
+    needs_definitions: true
+
+  - id: new_signups_2025
+    question: How many customers signed up in 2025?
+    gold_sql: SELECT COUNT(*) FROM customers WHERE signup_date >= '2025-01-01' AND signup_date < '2026-01-01'
+
+  # Dashboard-style requests (no explicit period: the dashboard filter handles dates)
+  - id: revenue_trend_all
+    question: Monthly revenue trend
+    chart: line|area
+    gold_sql: >
+      SELECT strftime('%Y-%m', order_date) AS month, SUM(amt) / 100.0 FROM orders
+      WHERE sts = 1 GROUP BY month
+    needs_definitions: true
+
+  - id: units_by_category
+    question: Units sold by product category, completed orders only
+    chart: bar|hbar|donut
+    gold_sql: >
+      SELECT p.category, SUM(oi.qty) FROM order_items oi JOIN orders o ON o.id = oi.order_id
+      JOIN products p ON p.id = oi.product_id WHERE o.sts = 1 GROUP BY p.category
+    needs_definitions: true
+
+  - id: aov_kpi
+    question: Average order value
+    chart: kpi
+    gold_sql: SELECT SUM(amt) / 100.0 / COUNT(*) FROM orders WHERE sts = 1
+    needs_definitions: true
+
+  - id: top_customers
+    question: Top 5 customers by revenue
+    chart: bar|hbar
+    ordered: true
+    gold_sql: >
+      SELECT c.name, SUM(o.amt) / 100.0 AS revenue FROM orders o JOIN customers c ON c.id = o.customer_id
+      WHERE o.sts = 1 GROUP BY c.id ORDER BY revenue DESC LIMIT 5
+    needs_definitions: true

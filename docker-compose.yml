@@ -1,0 +1,45 @@
+# Stardeck: frontend (nginx) -> backend (FastAPI) -> LLM (Ollama, or any OpenAI-compatible server)
+#   cp .env.example .env && docker compose up -d
+services:
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama:/root/.ollama
+    ports:
+      - "11434:11434"
+    # Uncomment for NVIDIA GPUs (requires nvidia-container-toolkit):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
+
+  # One-shot: pulls the configured model into the ollama volume, then exits.
+  ollama-pull:
+    image: ollama/ollama:latest
+    depends_on: [ollama]
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["ollama", "pull", "${STARDECK_LLM_MODEL:-qwen3.5:9b}"]
+    restart: "no"
+
+  backend:
+    build: ./backend
+    env_file: .env
+    environment:
+      STARDECK_LLM_BASE_URL: ${STARDECK_LLM_BASE_URL:-http://ollama:11434/v1}
+      STARDECK_DATA_DIR: /data
+    volumes:
+      - stardeck-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # reach LM Studio / other servers on the host
+    depends_on: [ollama]
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "${STARDECK_PORT:-3000}:80"
+    depends_on: [backend]
+
+volumes:
+  ollama:
+  stardeck-data:
