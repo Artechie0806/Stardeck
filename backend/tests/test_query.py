@@ -4,6 +4,8 @@ from datetime import date
 import pytest
 from sqlalchemy import create_engine
 
+from stardeck.context import SourceContext
+from stardeck.definitions import Definitions
 from stardeck.query import (
     DateRange,
     QueryError,
@@ -53,21 +55,25 @@ def engine(tmp_path):
     return create_engine(f"sqlite:///file:{path}?mode=ro&uri=true")
 
 
+def ctx(engine, **kw):
+    return SourceContext(id="t", name="t", engine=engine, dialect="sqlite", tables=[], defs=Definitions(), **kw)
+
+
 def test_run_is_json_safe_and_truncates(engine):
-    res = run(engine, "SELECT id, amt FROM orders ORDER BY id", "sqlite", max_rows=2)
+    res = run(ctx(engine), "SELECT id, amt FROM orders ORDER BY id", max_rows=2)
     assert res.columns == ["id", "amt"] and res.rows == [[1, 10.5], [2, 20]] and res.truncated
 
 
 def test_run_rejects_writes_and_reports_errors(engine):
     with pytest.raises(UnsafeSQLError):
-        run(engine, "DELETE FROM orders", "sqlite")
+        run(ctx(engine), "DELETE FROM orders")
     with pytest.raises(QueryError, match="no such column"):
-        run(engine, "SELECT nope FROM orders", "sqlite")
+        run(ctx(engine), "SELECT nope FROM orders")
 
 
 def test_kpi_with_range_and_previous_period(engine):
     sql = "SELECT SUM(amt) AS revenue FROM orders"
-    res = run_widget_query(engine, sql, "sqlite", kpi=True, date_filter=("orders", "order_date"),
+    res = run_widget_query(ctx(engine), sql, kpi=True, date_filter=("orders", "order_date"),
                            rng=Y2025, compare=DateRange(date(2024, 1, 1), date(2024, 12, 31)))
     # The 18:00 timestamp on Dec 31 is included thanks to the exclusive end bound.
     assert res.columns == ["value", "previous"] and res.rows == [[25, 10.5]]
@@ -76,4 +82,4 @@ def test_kpi_with_range_and_previous_period(engine):
 def test_sqlite_timeout(engine):
     slow = "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n) SELECT COUNT(*) FROM n"
     with pytest.raises(QueryError, match="longer than 1s"):
-        run(engine, slow, "sqlite", timeout_s=1)
+        run(ctx(engine, timeout_s=1), slow)

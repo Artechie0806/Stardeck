@@ -6,15 +6,23 @@ decoding on Ollama / llama.cpp / vLLM) and validates it with Pydantic.
 """
 
 import json
+import logging
 import re
-from typing import TypeVar
+import threading
+from contextlib import nullcontext
+from typing import TYPE_CHECKING, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
 
 from stardeck.config import Settings, get_settings
 
+if TYPE_CHECKING:
+    from stardeck.llm.gate import Gate
+    from stardeck.llm.status import LLMStatus
+
 T = TypeVar("T", bound=BaseModel)
+log = logging.getLogger("stardeck.llm")
 
 # Qwen-family reasoning models may emit <think>...</think> before the answer.
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
@@ -25,19 +33,72 @@ class LLMError(RuntimeError):
     pass
 
 
+class LLMBusy(LLMError):
+    """Too many AI requests right now (see llm/gate.py)."""
+
+    def __init__(self) -> None:
+        super().__init__("the AI is busy with other requests; try again in a minute")
+
+
+class LLMCancelled(LLMError):
+    """The person went away (closed the page) before the AI got to this."""
+
+    def __init__(self) -> None:
+        super().__init__("cancelled")
+
+
+class LLMUnavailable(LLMError):
+    """The AI server was just found offline (it's checked again shortly)."""
+
+    def __init__(self) -> None:
+        super().__init__("the AI server is offline right now")
+
+
+def ai_message(exc: LLMError) -> str:
+    """What to tell people when the AI couldn't help."""
+    if isinstance(exc, LLMBusy):
+        return "The AI is busy with other requests. Try again in a minute."
+    if isinstance(exc, LLMUnavailable):
+        return "The AI is offline right now. Dashboards, filters and sharing keep working."
+    if isinstance(exc, LLMCancelled):
+        return "Stopped."
+    return f"The AI model is not available: {exc}"
+
+
+def describe_failure(exc: Exception) -> str:
+    """What went wrong, for people. Never the server's address (that's logged instead)."""
+    if isinstance(exc, httpx.ConnectError | httpx.ConnectTimeout):
+        return "the AI server can't be reached right now"
+    if isinstance(exc, httpx.TimeoutException):
+        return "the AI server took too long to answer"
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"the AI server returned an error ({exc.response.status_code})"
+    return "the AI server sent an unexpected reply"
+
+
 def clean_output(text: str) -> str:
     text = _THINK_RE.sub("", text).strip()
     return _FENCE_RE.sub("", text).strip()
 
 
 class LLMClient:
-    def __init__(self, settings: Settings | None = None, transport: httpx.BaseTransport | None = None):
+    def __init__(self, settings: Settings | None = None, transport: httpx.BaseTransport | None = None,
+                 timeout: httpx.Timeout | None = None, *, gate: "Gate | None" = None,
+                 status: "LLMStatus | None" = None, background: bool = False,
+                 cancel: threading.Event | None = None, wait_s: float | None = None):
+        """`gate`: the shared queue in front of the AI server; `status`: fail fast while it's known
+        to be offline; `background`: work nobody is waiting on word by word (never takes the last
+        slot); `cancel`: set when the person went away, so queued calls don't run."""
         self.settings = settings or get_settings()
+        self.gate, self.status, self.background, self.cancel = gate, status, background, cancel
+        self.wait_s = wait_s  # longest wait for a free slot (default: the gate's)
         self._http = httpx.Client(
             base_url=self.settings.llm_base_url.rstrip("/"),
             headers={"Authorization": f"Bearer {self.settings.llm_api_key}"},
-            timeout=self.settings.llm_timeout_s,
-            transport=transport,
+            # Connecting fails fast (an AI server that's off shouldn't hold a request for minutes);
+            # answering may take long.
+            timeout=timeout or httpx.Timeout(connect=5.0, read=self.settings.llm_timeout_s, write=10.0, pool=5.0),
+            transport=transport or httpx.HTTPTransport(retries=1),  # retries connection errors only
         )
 
     def close(self) -> None:
@@ -58,13 +119,23 @@ class LLMClient:
             }
         if response_format:
             payload["response_format"] = response_format
-        try:
-            resp = self._http.post("/chat/completions", json=payload)
-            resp.raise_for_status()
-            choice = resp.json()["choices"][0]
-            content = clean_output(choice["message"].get("content") or "")
-        except (httpx.HTTPError, KeyError, IndexError) as exc:
-            raise LLMError(f"LLM request failed: {exc}") from exc
+        if self.status is not None and self.status.offline():
+            raise LLMUnavailable
+        with self.gate.slot(self.background, self.wait_s, self.cancel) if self.gate else nullcontext():
+            if self.cancel is not None and self.cancel.is_set():
+                raise LLMCancelled
+            try:
+                resp = self._http.post("/chat/completions", json=payload)
+                resp.raise_for_status()
+                choice = resp.json()["choices"][0]
+                content = clean_output(choice["message"].get("content") or "")
+            except (httpx.HTTPError, KeyError, IndexError) as exc:
+                log.warning("LLM request failed: %r", exc)
+                if self.status is not None and isinstance(exc, httpx.ConnectError | httpx.ConnectTimeout):
+                    self.status.mark(False)
+                raise LLMError(describe_failure(exc)) from exc
+        if self.status is not None:
+            self.status.mark(True)
         if not content and choice.get("finish_reason") == "length":
             raise LLMError(
                 f"The model used all {self.settings.llm_max_tokens} tokens without answering "
@@ -98,4 +169,5 @@ class LLMClient:
             resp.raise_for_status()
             return [m["id"] for m in resp.json().get("data", [])]
         except (httpx.HTTPError, KeyError) as exc:
-            raise LLMError(f"Could not reach LLM endpoint: {exc}") from exc
+            log.warning("LLM model list failed: %r", exc)
+            raise LLMError(describe_failure(exc)) from exc

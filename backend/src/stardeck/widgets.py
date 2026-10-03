@@ -9,18 +9,20 @@ Small local models are reliable when each step is narrow, so:
 """
 
 import re
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Literal
 
 import sqlglot
 from pydantic import BaseModel, Field
-from sqlalchemy.engine import Engine
 from sqlglot import exp
 
 from stardeck.charts import CHART_GUIDE, ChartType, Stack, derive_roles, finalize
-from stardeck.definitions import Definitions
-from stardeck.grain import check_fanout, measured_tables
+from stardeck.context import Relationship, SourceContext
+from stardeck.definitions import Definitions, Measure
+from stardeck.grain import check_fanout, many_sides, measured_tables
 from stardeck.llm import LLMClient, LLMError
+from stardeck.measures import expand_sql, fiscal_note, measure_for_column
 from stardeck.query import QueryError, QueryResult, UnsafeSQLError, reads_table, run
 from stardeck.schema import TableInfo, render_schema
 
@@ -86,7 +88,8 @@ SQL rules:
   never SUM/COUNT/AVG columns of the "one" side after that join: aggregate that side first in a
   subquery, or use the "many" side's own columns.
 - Do NOT add date-range filters unless the request names a specific period. The dashboard applies
-  its date filter automatically.
+  its date filter automatically. {fiscal}
+- If a MEASURE in the schema fits the request, use MEASURE(name) instead of writing the calculation.
 - Time series: one row per period with a sortable label (e.g. 'YYYY-MM'), ordered by period.
 - Rankings: ORDER BY the measure DESC and LIMIT to the N asked for (default 10). No LIMIT otherwise.
 - A single headline number: return exactly one row and one column.
@@ -223,26 +226,36 @@ def check_year_columns(result: QueryResult, request: str, dialect: str) -> str |
     return None
 
 
-def _is_date_column(c) -> bool:
+def is_date_column(c) -> bool:
     return bool(_DATE_TYPE.search(c.type) or (
         c.samples and all(_TEMPORAL.match(v) for v in c.samples)
         and re.search(r"date|time|_at$|day", c.name, re.IGNORECASE)))
 
 
-def validate_date_column(draft: WidgetDraft, tables: list[TableInfo], sql: str, dialect: str) -> tuple[str, str] | None:
-    return pick_date_column(tables, sql, dialect, draft.date_column)
+def validate_date_column(draft: WidgetDraft, tables: list[TableInfo], sql: str, dialect: str, *,
+                         relationships: Iterable[Relationship] = (),
+                         measures: Mapping[str, Measure] | None = None) -> tuple[str, str] | None:
+    return pick_date_column(tables, sql, dialect, draft.date_column, relationships=relationships, measures=measures)
 
 
-def pick_date_column(tables: list[TableInfo], sql: str, dialect: str,
-                     preferred: str | None = None) -> tuple[str, str] | None:
+def pick_date_column(tables: list[TableInfo], sql: str, dialect: str, preferred: str | None = None, *,
+                     relationships: Iterable[Relationship] = (),
+                     measures: Mapping[str, Measure] | None = None) -> tuple[str, str] | None:
     """Pick the date the dashboard filter should restrict, preferring the table being measured.
 
     "Revenue by customer, last year" must filter orders by order date, not customers by signup
     date, so date columns of the tables inside aggregates come first, even over `preferred`
-    (the model's pick, or the widget's previous date column, as "table.column").
+    (the model's pick, or the widget's previous date column, as "table.column"). Counting rows of a
+    join counts its "many" side, which the foreign keys and `relationships` tell; MEASURE(...)
+    calls are expanded with `measures` first, so the measure's own table counts.
     """
+    if measures:
+        try:
+            sql = expand_sql(sql, dialect, dict(measures))
+        except (QueryError, sqlglot.errors.SqlglotError):
+            pass  # an unknown measure: decide from the query as written
     by_name = {t.name.lower(): t for t in tables}
-    measured = measured_tables(sql, dialect)
+    measured = measured_tables(sql, dialect, many_sides(tables, relationships))
     model_pick: tuple[str, str] | None = None
     if preferred and "." in preferred:
         tname, cname = preferred.rsplit(".", 1)
@@ -252,11 +265,11 @@ def pick_date_column(tables: list[TableInfo], sql: str, dialect: str,
         candidates.append(model_pick)
     for name in measured:
         if t := by_name.get(name):
-            candidates += [(t.name, c.name) for c in t.columns if _is_date_column(c)]
+            candidates += [(t.name, c.name) for c in t.columns if is_date_column(c)]
     if model_pick:
         candidates.append(model_pick)
     for t in tables:
-        candidates += [(t.name, c.name) for c in t.columns if _is_date_column(c)]
+        candidates += [(t.name, c.name) for c in t.columns if is_date_column(c)]
     for tname, cname in candidates:
         t = by_name.get(tname.lower())
         col = next((c for c in t.columns if c.name.lower() == cname.lower()), None) if t else None
@@ -320,15 +333,38 @@ def infer_currency(spec: dict, sql: str, dialect: str, tables: list[TableInfo], 
     return spec
 
 
+def measure_format(spec: dict, sql: str, dialect: str, measures: dict) -> dict:
+    """A chart of a measure shows it the way the measure says (currency, percent, up-is-good)."""
+    m = measure_for_column(sql, dialect, spec.get("y") or "", measures) if spec.get("y") else None
+    if m is None and spec.get("type") in ("kpi", "gauge"):
+        m = next((x for x in (measure_for_column(sql, dialect, c, measures) for c in _first_select_columns(sql, dialect)) if x), None)
+    if m is None:
+        return spec
+    out = {k: v for k, v in spec.items() if k not in ("currency",)} | {"format": m.format}
+    if m.format == "currency" and m.currency:
+        out["currency"] = m.currency
+    if not m.up_is_good:
+        out["upIsGood"] = False
+    return out
+
+
+def _first_select_columns(sql: str, dialect: str) -> list[str]:
+    try:
+        tree = sqlglot.parse_one(sql, read=dialect)
+    except sqlglot.errors.SqlglotError:
+        return []
+    select = tree if isinstance(tree, exp.Select) else next(iter(tree.find_all(exp.Select)), None)
+    return [p.alias_or_name for p in select.expressions] if select else []
+
+
 # ---------- the pipeline ----------
 
-def generate_widget(
-    llm: LLMClient, engine: Engine, dialect: str, tables: list[TableInfo], defs: Definitions,
-    request: str, *, max_attempts: int = 3, timeout_s: int = 30, prepared: dict[str, str] | None = None,
-) -> WidgetResult:
+def generate_widget(llm: LLMClient, ctx: SourceContext, request: str, *, max_attempts: int = 3) -> WidgetResult:
+    tables, defs, dialect = ctx.tables, ctx.defs, ctx.dialect
     chosen = select_tables(usable_tables(tables, request), defs, request)
     messages = [
-        {"role": "system", "content": PROMPT.format(dialect=dialect, schema=render_schema(chosen, defs), chart_guide=CHART_GUIDE)},
+        {"role": "system", "content": PROMPT.format(dialect=dialect, schema=render_schema(chosen, defs),
+                                                    chart_guide=CHART_GUIDE, fiscal=fiscal_note(ctx.fiscal_start))},
         {"role": "user", "content": request},
     ]
     last_sql, last_error = None, "no attempt made"
@@ -337,7 +373,10 @@ def generate_widget(
         draft = llm.structured(messages, WidgetDraft)
         last_sql = draft.sql
         feedback = None
-        fanout = check_fanout(draft.sql, dialect, tables)
+        try:  # double counting is checked on the real aggregates, i.e. with measures expanded
+            fanout = check_fanout(expand_sql(draft.sql, dialect, ctx.measures), dialect, tables)
+        except (QueryError, sqlglot.errors.SqlglotError):
+            fanout = None  # unknown measures etc. are reported when the query runs
         if fanout and attempt < max_attempts:
             last_error = fanout
             feedback = f"That query double counts: {fanout}\nFix it. Return the full answer again."
@@ -347,7 +386,7 @@ def generate_widget(
             ]
             continue
         try:
-            result = run(engine, draft.sql, dialect, timeout_s, prepared=prepared)
+            result = run(ctx, draft.sql)
         except (UnsafeSQLError, QueryError) as exc:
             last_error = str(exc)
             feedback = f"That query failed: {last_error}\nFix it. Return the full answer again."
@@ -362,6 +401,7 @@ def generate_widget(
             else:
                 spec, notes = finalize_spec(draft, result)
                 spec = infer_currency(spec, draft.sql, dialect, chosen, defs, draft.currency)
+                spec = measure_format(spec, draft.sql, dialect, ctx.measures)
                 if fanout:
                     notes.append("Warning: this query may count some values more than once.")
                 if not result.rows:
@@ -374,7 +414,8 @@ def generate_widget(
                 return WidgetResult(
                     title=draft.title.strip()[:80] or "Untitled", summary=clean_summary(draft.summary),
                     sql=draft.sql.strip(), spec=spec,
-                    date_filter=None if own_periods else validate_date_column(draft, chosen, draft.sql, dialect),
+                    date_filter=None if own_periods else validate_date_column(
+                        draft, chosen, draft.sql, dialect, relationships=ctx.relationships, measures=ctx.measures),
                     result=result, attempts=attempt, notes=notes,
                 )
         messages += [
@@ -405,7 +446,8 @@ def _plain_title(spec: dict, result: QueryResult) -> str:
 
 
 def refit_widget(widget: dict, sql: str, result: QueryResult, tables: list[TableInfo], defs: Definitions,
-                 dialect: str, llm: LLMClient | None = None) -> dict:
+                 dialect: str, llm: LLMClient | None = None, *, relationships: Iterable[Relationship] = (),
+                 measures: Mapping[str, Measure] | None = None) -> dict:
     """Bring a widget's chart spec, number format, date filter, title and summary in line with new SQL.
 
     Keeps the chart type the user chose. When the result's columns changed, the old title and
@@ -434,7 +476,8 @@ def refit_widget(widget: dict, sql: str, result: QueryResult, tables: list[Table
     if compares_periods(sql, dialect):
         date_filter = None  # it needs the earlier periods
     elif previous or changed:
-        date_filter = pick_date_column(tables, sql, dialect, preferred)  # still valid? else the best fit
+        date_filter = pick_date_column(tables, sql, dialect, preferred, relationships=relationships,
+                                       measures=measures)  # still valid? else the best fit
     else:
         date_filter = None  # the filter was off and the query's shape didn't change: keep it off
 

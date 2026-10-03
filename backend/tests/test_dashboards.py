@@ -2,12 +2,9 @@ import json
 
 import httpx
 
-from stardeck.config import Settings
 from stardeck.dashboards import ResultCache, auto_layout
-from stardeck.deps import get_llm
-from stardeck.llm import LLMClient
 from stardeck.query import QueryResult
-from tests.conftest import completed_orders
+from tests.conftest import completed_orders, fake_ai
 
 LAST_YEAR = {"start": "2025-01-01", "end": "2025-12-31", "compareStart": "2024-01-01", "compareEnd": "2024-12-31"}
 
@@ -96,15 +93,9 @@ def test_generate_streams_plan_and_saves(client, monkeypatch):
             widget_bad if "Broken" in user else widget_ok
         return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(reply)}}]})
 
-    real_init = LLMClient.__init__
-    monkeypatch.setattr(LLMClient, "__init__",
-                        lambda self, settings=None, transport=None: real_init(self, Settings(), httpx.MockTransport(handler)))
-    client.app.dependency_overrides[get_llm] = lambda: LLMClient()
-    try:
-        with client.stream("POST", "/api/dashboards/generate", json={"sourceId": "retail-demo", "goal": ""}) as res:
-            events = [json.loads(line) for line in res.iter_lines() if line]
-    finally:
-        client.app.dependency_overrides.clear()
+    with fake_ai(client.app, handler), \
+            client.stream("POST", "/api/dashboards/generate", json={"sourceId": "retail-demo", "goal": ""}) as res:
+        events = [json.loads(line) for line in res.iter_lines() if line]
     kinds = [e["type"] for e in events]
     assert kinds[0] == "plan" and kinds[-1] == "done"
     assert kinds.count("widget") == 2 and kinds.count("widget_failed") == 1

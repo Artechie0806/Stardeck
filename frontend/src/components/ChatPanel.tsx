@@ -4,9 +4,17 @@ import {
   ArrowUp, BarChart3, BookOpen, Check, ChartColumnIncreasing, LoaderCircle, LocateFixed, MessageCircleQuestion, Pencil,
   Plus, RefreshCw, RotateCcw, Sparkles, SquarePen, Trash2, Wand2, WandSparkles, X,
 } from 'lucide-react'
-import { api, type Analysis, type ChartType, type ChatAgent, type ChatMessage, type ChatProposal, type DatePreset } from '../api'
+import {
+  api, ApiError, type ActiveFilter, type Analysis, type ChartType, type ChatAgent, type ChatMessage, type ChatProposal,
+  type DatePreset, type DateRange,
+} from '../api'
+import { recheckAi, useAiStatus } from '../lib/aiStatus'
 import { newId } from '../lib/browser'
 import { chartLabel } from '../lib/chartFit'
+import { formatRange } from '../lib/dates'
+import { humanize } from '../lib/format'
+import { left, useUsage } from '../lib/plan'
+import { AiPaused, AiUsedUp } from './AiNotice'
 import { DataTable } from './DataTable'
 import { WidgetVisual } from './WidgetVisual'
 
@@ -31,11 +39,17 @@ interface Suggestion { text: string; label: string; kind: StarterKind; /** false
 const STARTER_ICON = { ask: MessageCircleQuestion, add: ChartColumnIncreasing, change: WandSparkles, define: BookOpen }
 
 /** Starter prompts built from this dashboard's own widgets and the source's unclear columns. */
-function buildSuggestions(widgets: { title: string; type: string }[], flagged: string | null): Suggestion[] {
+function buildSuggestions(widgets: { title: string; type: string }[], flagged: string | null, canEdit = true): Suggestion[] {
   const out: Suggestion[] = []
   const add = (text: string, kind: StarterKind, send = true, label = text) => out.push({ text, label, kind, send })
   const kpi = widgets.find((w) => w.type === 'kpi')
   const chart = widgets.find((w) => w.type !== 'kpi' && w.type !== 'table')
+  if (!canEdit) { // viewers ask questions; they can't change the dashboard
+    if (chart) add(`What stands out in "${chart.title}"?`, 'ask')
+    if (kpi) add(`How has ${kpi.title.toLowerCase()} changed over the last few months?`, 'ask')
+    add('What are the most important trends in this data?', 'ask')
+    return out.slice(0, 4)
+  }
   if (chart) add(`What stands out in "${chart.title}"?`, 'ask')
   if (kpi) add(`Show ${kpi.title.toLowerCase()} by month`, 'add')
   if (chart) add(`Make "${chart.title}" a ${chart.type === 'bar' ? 'donut' : 'bar'} chart`, 'change')
@@ -52,12 +66,20 @@ const AGENT: Record<ChatAgent | 'default', { label: string; icon: typeof Sparkle
 }
 
 /** A chat message plus what only the panel needs: failures to retry, and the widget a change touched. */
-type Message = ChatMessage & { error?: boolean; retry?: { text: string; agent?: ChatAgent; basisSql?: string }; widgetId?: string }
+type Message = ChatMessage & {
+  error?: boolean; retry?: { text: string; agent?: ChatAgent; basisSql?: string; basisSource?: string }; widgetId?: string
+}
 
 interface Props {
   dashboardId: string
+  /** The dashboard's main source (for definitions and starter suggestions). */
   sourceId: string
   preset: DatePreset
+  /** The dates and filters the dashboard is showing: answers and previews use the same. */
+  ranges: { range?: DateRange; compare?: DateRange }
+  filters: ActiveFilter[]
+  /** Viewers only get the analyst (no changes to the dashboard). */
+  canEdit: boolean
   /** Called once a change is saved; resolves when the dashboard shows it. `widgetId`: the widget added or changed. */
   onApplied: (widgetId?: string) => Promise<void>
   /** Point out a widget on the dashboard. */
@@ -70,7 +92,7 @@ interface Props {
   draft?: { text: string; n: number }
 }
 
-export function ChatPanel({ dashboardId, sourceId, preset, onApplied, onShow, onClose, open, widgets, draft }: Props) {
+export function ChatPanel({ dashboardId, sourceId, preset, ranges, filters, canEdit, onApplied, onShow, onClose, open, widgets, draft }: Props) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
@@ -88,15 +110,22 @@ export function ChatPanel({ dashboardId, sourceId, preset, onApplied, onShow, on
   }
   const modal = useMedia(MODAL)
   const phone = useMedia(PHONE)
+  // While the AI is offline or today's messages are used up, people can still type; sending waits.
+  const paused = useAiStatus().online === false
+  const { usage, reload: reloadUsage } = useUsage()
+  const allowance = usage?.ai.assistant
+  const remaining = left(allowance)
+  const blocked = paused || remaining === 0
 
   useEffect(() => {
+    if (!canEdit) return // viewers don't see schemas (and can't record definitions)
     api.getSource(sourceId).then((src) => {
       for (const t of src.tables) {
         const c = t.columns.find((x) => x.flag)
         if (c) { setFlagged(c.name); return }
       }
     }).catch(() => {})
-  }, [sourceId])
+  }, [sourceId, canEdit])
 
   // Opening moves focus into the panel: the input on desktop (or when text was handed over), the panel
   // itself on touch screens, so the keyboard doesn't cover the starter suggestions.
@@ -172,14 +201,14 @@ export function ChatPanel({ dashboardId, sourceId, preset, onApplied, onShow, on
 
   /** `basisSql`: "Add as chart" passes the analyst's query, so the chart shows the same numbers.
    *  `base`: the conversation to continue (a retry drops the failed exchange first). */
-  const send = async (text: string, agent?: ChatAgent, basisSql?: string, base: Message[] = messages) => {
-    if (!text.trim() || busy) return
+  const send = async (text: string, agent?: ChatAgent, basisSql?: string, base: Message[] = messages, basisSource?: string) => {
+    if (!text.trim() || busy || blocked) return
     const history = base.filter((m) => !m.error).map((m) => ({ role: m.role, text: m.text }))
     setMessages([...base, { id: newId(), role: 'user', text }])
     setInput('')
     setBusy(true)
     try {
-      const reply = await api.chat(dashboardId, text, history, preset, pending, agent, basisSql)
+      const reply = await api.chat(dashboardId, text, history, ranges, filters, pending, agent, basisSql, basisSource)
       setPending(reply.pending)
       setMessages((m) => [...m, {
         id: newId(), role: 'assistant', text: reply.text, proposal: reply.proposal,
@@ -187,18 +216,23 @@ export function ChatPanel({ dashboardId, sourceId, preset, onApplied, onShow, on
         agent: reply.agent, analysis: reply.analysis,
       }])
     } catch (e) {
+      if (e instanceof ApiError && e.status === 503) void recheckAi() // offline? the notice shows at once
       setMessages((m) => [...m, {
-        id: newId(), role: 'assistant', error: true, retry: { text, agent, basisSql },
+        id: newId(), role: 'assistant', error: true, retry: { text, agent, basisSql, basisSource },
         text: `I couldn't get an answer: ${(e as Error).message}`,
       }])
     } finally {
       setBusy(false)
+      reloadUsage()
     }
   }
 
   /** Ask the failed question again, in place of the failed exchange. */
   const retry = (m: Message) => {
-    if (m.retry) void send(m.retry.text, m.retry.agent, m.retry.basisSql, messages.slice(0, Math.max(0, messages.indexOf(m) - 1)))
+    if (m.retry) {
+      void send(m.retry.text, m.retry.agent, m.retry.basisSql, messages.slice(0, Math.max(0, messages.indexOf(m) - 1)),
+        m.retry.basisSource)
+    }
   }
 
   const resolve = async (msg: Message, apply: boolean) => {
@@ -244,7 +278,7 @@ export function ChatPanel({ dashboardId, sourceId, preset, onApplied, onShow, on
     }
   }
 
-  const suggestions = buildSuggestions(widgets, flagged)
+  const suggestions = buildSuggestions(widgets, flagged, canEdit)
   const lastIndex = messages.length - 1
 
   return createPortal(
@@ -280,7 +314,7 @@ export function ChatPanel({ dashboardId, sourceId, preset, onApplied, onShow, on
                   {suggestions.map((s) => {
                     const Icon = STARTER_ICON[s.kind]
                     return (
-                      <button key={s.text} className="starter" onClick={() => {
+                      <button key={s.text} className="starter" disabled={s.send && blocked} onClick={() => {
                         if (s.send) void send(s.text)
                         else { setInput(s.text); inputRef.current?.focus() }
                       }}>
@@ -298,12 +332,13 @@ export function ChatPanel({ dashboardId, sourceId, preset, onApplied, onShow, on
             <div key={m.id} className="msg user"><div className="msg-bubble">{m.text}</div></div>
           ) : (
             <AssistantMessage key={m.id} m={m} details={m.analysis && (
-              <AnalysisDetails analysis={m.analysis} disabled={busy}
-                onChart={(req) => void send(`Add a chart: ${req}`, 'builder', m.analysis?.queries.at(-1)?.sql)} />
+              <AnalysisDetails analysis={m.analysis} disabled={busy || blocked}
+                onChart={canEdit ? (req) => void send(`Add a chart: ${req}`, 'builder', m.analysis?.queries.at(-1)?.sql,
+                  messages, m.analysis?.sourceId ?? undefined) : undefined} />
             )}>
               {m.retry && i === lastIndex && (
                 <div className="msg-actions">
-                  <button className="btn ghost small" onClick={() => retry(m)} disabled={busy}><RotateCcw size={13} aria-hidden /> Try again</button>
+                  <button className="btn ghost small" onClick={() => retry(m)} disabled={busy || blocked}><RotateCcw size={13} aria-hidden /> Try again</button>
                 </div>
               )}
               {m.proposal && (
@@ -312,7 +347,7 @@ export function ChatPanel({ dashboardId, sourceId, preset, onApplied, onShow, on
               )}
               {m.options && m.options.length > 0 && i === lastIndex && !busy && (
                 <div className="msg-options" role="group" aria-label="Suggested replies">
-                  {m.options.map((o) => <button key={o} className="chip" onClick={() => send(o)}>{o}</button>)}
+                  {m.options.map((o) => <button key={o} className="chip" disabled={blocked} onClick={() => send(o)}>{o}</button>)}
                 </div>
               )}
             </AssistantMessage>
@@ -321,6 +356,10 @@ export function ChatPanel({ dashboardId, sourceId, preset, onApplied, onShow, on
         </div>
 
         <form className="chat-input" onSubmit={onSubmit}>
+          {paused ? <AiPaused />
+            : remaining === 0 && allowance?.limit != null && (
+              <AiUsedUp what="assistant message" limit={allowance.limit} resetsAt={usage?.ai.resetsAt} />
+            )}
           <div className="composer">
             <textarea ref={inputRef} value={input} rows={1} enterKeyHint="send" aria-label="Message Stardeck"
               placeholder={pending ? 'Type your answer…' : 'Ask a question or describe a chart…'}
@@ -328,11 +367,14 @@ export function ChatPanel({ dashboardId, sourceId, preset, onApplied, onShow, on
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send(input) }
               }} />
-            <button type="submit" className="send-btn" disabled={!input.trim() || busy} aria-label="Send" title="Send (Enter)">
+            <button type="submit" className="send-btn" disabled={!input.trim() || busy || blocked} aria-label="Send" title="Send (Enter)">
               {busy ? <LoaderCircle size={17} className="spin" aria-hidden /> : <ArrowUp size={18} aria-hidden />}
             </button>
           </div>
-          <p className="composer-hint" aria-hidden="true"><kbd>Enter</kbd> to send · <kbd>Shift</kbd> + <kbd>Enter</kbd> for a new line</p>
+          <p className="composer-hint">
+            <span className="keys" aria-hidden="true"><kbd>Enter</kbd> to send · <kbd>Shift</kbd> + <kbd>Enter</kbd> for a new line</span>
+            {remaining !== null && remaining > 0 && <span className="ai-left">{remaining} of {allowance?.limit} left today</span>}
+          </p>
         </form>
       </section>
     </>,
@@ -384,7 +426,7 @@ function Thinking() {
 async function applyProposal(p: ChatProposal, dashboardId: string, sourceId: string, knownIds: string[]): Promise<string | undefined> {
   switch (p.kind) {
     case 'definition':
-      await api.saveColumnDefinition(sourceId, p.table, p.column, p.definition, 'chat')
+      await api.saveColumnDefinition(p.sourceId ?? sourceId, p.table, p.column, p.definition, 'chat')
       return undefined
     case 'add_widget': {
       const def = await api.addWidget(dashboardId, p.widget)
@@ -533,7 +575,7 @@ function renderText(text: string) {
 
 /** The analyst's working: the numbers behind the answer, the queries it ran, and "Add as chart". */
 function AnalysisDetails({ analysis, disabled, onChart }: {
-  analysis: Analysis; disabled: boolean; onChart: (request: string) => void
+  analysis: Analysis; disabled: boolean; onChart?: (request: string) => void
 }) {
   const { evidence, queries, chartRequest } = analysis
   return (
@@ -547,10 +589,19 @@ function AnalysisDetails({ analysis, disabled, onChart }: {
       {queries.length > 0 && (
         <details>
           <summary>How I worked it out <span className="count">{queries.length} {queries.length === 1 ? 'query' : 'queries'}</span></summary>
-          {queries.map((q, i) => <pre key={i} className="analysis-sql">{q.sql}</pre>)}
+          {queries.map((q, i) => (
+            <div key={i}>
+              <pre className="analysis-sql">{q.sql}</pre>
+              {q.dates && (
+                <p className="analysis-dates">
+                  With the dashboard’s dates: {formatRange({ start: q.dates.start, end: q.dates.end })}, by {humanize(q.dates.column).toLowerCase()}
+                </p>
+              )}
+            </div>
+          ))}
         </details>
       )}
-      {chartRequest && (
+      {chartRequest && onChart && (
         <button className="btn ghost small" disabled={disabled} onClick={() => onChart(chartRequest)}>
           <ChartColumnIncreasing size={14} aria-hidden /> Add as chart
         </button>

@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react'
-import type { ChartSpec, DatePreset, QueryResult } from '../api/types'
+import type { Cell, ChartSpec, DatePreset, QueryResult } from '../api/types'
 import { chartLabel, deriveRoles, fitProblem } from '../lib/chartFit'
 import { DataTable } from './DataTable'
 import { EChart } from './EChart'
@@ -10,8 +10,11 @@ import { MatrixTable } from './MatrixTable'
 const MapChart = lazy(() => import('./MapChart').then((m) => ({ default: m.MapChart })))
 
 /** The data part of a widget, shared by dashboard cards and chat previews. */
-export function WidgetVisual({ spec, result, preset, asTable = false, dateFiltered = true }: {
+export function WidgetVisual({ spec, result, preset, asTable = false, dateFiltered = true, onPick, picked }: {
   spec: ChartSpec; result: QueryResult; preset: DatePreset; asTable?: boolean; dateFiltered?: boolean
+  /** Clicking a category (bar, slice, point on a map) reports its column and raw value. */
+  onPick?: (column: string, value: Cell) => void
+  picked?: Cell
 }) {
   if (spec.type === 'kpi') return <KpiTile spec={spec} result={result} preset={preset} dateFiltered={dateFiltered} />
   if (!result.rows.length) return <p className="widget-empty">No data for this period.</p>
@@ -36,9 +39,9 @@ export function WidgetVisual({ spec, result, preset, asTable = false, dateFilter
   }
   if (spec.type === 'matrix') return <MatrixTable spec={spec} result={result} />
   if (spec.type === 'map') {
-    return <Suspense fallback={<p className="widget-empty">Loading map…</p>}><MapChart spec={spec} result={result} /></Suspense>
+    return <Suspense fallback={<p className="widget-empty">Loading map…</p>}><MapChart spec={spec} result={result} onPick={onPick} /></Suspense>
   }
-  return <EChart spec={spec} result={result} />
+  return <EChart spec={spec} result={result} onPick={onPick} picked={picked} />
 }
 
 /** True when the measure column has no values at all (e.g. a comparison with nothing to compare). */

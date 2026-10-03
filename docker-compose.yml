@@ -5,8 +5,9 @@ services:
     image: ollama/ollama:latest
     volumes:
       - ollama:/root/.ollama
+    # Only this machine can reach the model server; Stardeck talks to it over the compose network.
     ports:
-      - "11434:11434"
+      - "127.0.0.1:11434:11434"
     # Uncomment for NVIDIA GPUs (requires nvidia-container-toolkit):
     # deploy:
     #   resources:

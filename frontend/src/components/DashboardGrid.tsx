@@ -2,7 +2,8 @@ import { useMemo } from 'react'
 import ReactGridLayout, { useContainerWidth, type Layout } from 'react-grid-layout'
 import 'react-grid-layout/css/styles.css'
 import 'react-resizable/css/styles.css'
-import type { ChartType, DatePreset, GridPos, QueryResult, Stack, Widget } from '../api/types'
+import type { Cell, ChartType, DatePreset, GridPos, QueryResult, Stack, Widget } from '../api/types'
+import { PRINT_GAP, PRINT_ROW, printBands } from '../lib/printing'
 import { WidgetCard } from './WidgetCard'
 
 const ROW_HEIGHT = 40
@@ -23,9 +24,26 @@ interface Props {
   onAsk?: (text: string) => void
   /** A widget to highlight briefly (e.g. one the assistant just added). */
   highlightId?: string
+  /** Cross-filtering: a category clicked in a widget. */
+  onPick?: (widgetId: string, column: string, value: Cell) => void
+  /** Widget id -> the value it's cross-filtering by. */
+  picked?: Record<string, Cell>
+  /** Widgets whose new results haven't arrived yet. */
+  refreshing?: Set<string>
+  filterLabels?: Record<string, string>
+  /** Source names by id, when the dashboard mixes sources. */
+  sourceNames?: Record<string, string>
+  defaultSourceId?: string
+  /** Lay out for printing: bands that each stay on one page (see lib/printing.ts). */
+  printLayout?: boolean
+  /** Shared links: no SQL anywhere. */
+  hideSql?: boolean
 }
 
-export function DashboardGrid({ widgets, preset, editing, readOnly = false, onLayoutChange, onRemove, onChangeType, onRunSql, onSaveSql, onAsk, highlightId }: Props) {
+export function DashboardGrid({
+  widgets, preset, editing, readOnly = false, onLayoutChange, onRemove, onChangeType, onRunSql, onSaveSql, onAsk, highlightId,
+  onPick, picked, refreshing, filterLabels, sourceNames, defaultSourceId, printLayout = false, hideSql = false,
+}: Props) {
   const { width, containerRef, mounted } = useContainerWidth()
   const layout = useMemo<Layout>(
     () => widgets.map((w) => ({
@@ -37,10 +55,29 @@ export function DashboardGrid({ widgets, preset, editing, readOnly = false, onLa
   )
 
   const card = (w: Widget) => (
-    <WidgetCard widget={w} preset={preset} editing={editing} readOnly={readOnly}
+    <WidgetCard widget={w} preset={preset} editing={editing} readOnly={readOnly} hideSql={hideSql}
       onRemove={() => onRemove(w.id)} onChangeType={(t, st) => onChangeType(w.id, t, st)}
-      onRunSql={(sql) => onRunSql(w, sql)} onSaveSql={(sql) => onSaveSql(w.id, sql)} onAsk={onAsk} />
+      onRunSql={(sql) => onRunSql(w, sql)} onSaveSql={(sql) => onSaveSql(w.id, sql)} onAsk={onAsk}
+      onPick={onPick ? (column, value) => onPick(w.id, column, value) : undefined} picked={picked?.[w.id]} refreshing={refreshing?.has(w.id)}
+      filterLabels={filterLabels} sourceName={sourceNames?.[w.sourceId ?? defaultSourceId ?? '']} />
   )
+
+  if (printLayout) {
+    return (
+      <div className="print-grid">
+        {printBands(widgets, PRINT_ROW, PRINT_GAP).map((band) => (
+          <section key={band.items[0].widget.id} className="print-band"
+            style={{ gridTemplateRows: `repeat(${band.rows}, minmax(${band.rowHeight}px, auto))` }}>
+            {band.items.map(({ widget, x, y, w, h }) => (
+              <div key={widget.id} data-widget-id={widget.id} style={{ gridColumn: `${x + 1} / span ${w}`, gridRow: `${y + 1} / span ${h}` }}>
+                {card(widget)}
+              </div>
+            ))}
+          </section>
+        ))}
+      </div>
+    )
+  }
 
   // Narrow screens: a simple stack in reading order (top-to-bottom, left-to-right). KPIs size to their
   // content and sit two to a row; charts keep a readable height.

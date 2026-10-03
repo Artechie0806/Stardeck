@@ -1,3 +1,10 @@
-from stardeck.llm.client import LLMClient, LLMError
+from stardeck.llm.client import (
+    LLMBusy,
+    LLMCancelled,
+    LLMClient,
+    LLMError,
+    LLMUnavailable,
+    ai_message,
+)
 
-__all__ = ["LLMClient", "LLMError"]
+__all__ = ["LLMBusy", "LLMCancelled", "LLMClient", "LLMError", "LLMUnavailable", "ai_message"]

@@ -1,7 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router'
-import { Check, CircleAlert, Database, LoaderCircle, Sparkles } from 'lucide-react'
+import { Check, CircleAlert, Database, LayoutDashboard, LoaderCircle, Sparkles } from 'lucide-react'
 import { api, type DataSource } from '../api'
+import { AiPaused, AiUsedUp } from '../components/AiNotice'
+import { UpgradePanel } from '../components/Upgrade'
+import { recheckAi, useAiStatus } from '../lib/aiStatus'
+import { isFull, left, usePlan, useUsage } from '../lib/plan'
 
 const GOAL_IDEAS = [
   'A one-page overview for management',
@@ -13,10 +17,16 @@ const GOAL_IDEAS = [
 type Step = { title: string; state: 'pending' | 'done' | 'failed'; reason?: string }
 
 export function NewDashboardPage() {
+  const { plan, has } = usePlan()
+  const { usage, reload: reloadUsage } = useUsage()
+  const paused = useAiStatus().online === false
+  const builds = usage?.ai.generation
+  const buildsLeft = left(builds)
+  const single = !has('multi_source')
   const navigate = useNavigate()
   const [sources, setSources] = useState<DataSource[]>([])
   const [loaded, setLoaded] = useState(false)
-  const [sourceId, setSourceId] = useState('')
+  const [sourceIds, setSourceIds] = useState<string[]>([])
   const [goal, setGoal] = useState('')
   const [phase, setPhase] = useState<'form' | 'planning' | 'building' | 'done'>('form')
   const [steps, setSteps] = useState<Step[]>([])
@@ -28,7 +38,12 @@ export function NewDashboardPage() {
   const wanted = params.get('source') // "New dashboard" on a source card preselects it
 
   useEffect(() => {
-    api.listSources().then((s) => { setSources(s); setSourceId(s.find((x) => x.id === wanted)?.id ?? s[0]?.id ?? ''); setLoaded(true) })
+    api.listSources().then((s) => {
+      setSources(s)
+      const first = s.find((x) => x.id === wanted)?.id ?? s[0]?.id
+      setSourceIds(first ? [first] : [])
+      setLoaded(true)
+    })
   }, [wanted])
 
   const generate = async () => {
@@ -38,13 +53,15 @@ export function NewDashboardPage() {
       await consume()
     } catch (e) {
       setError((e as Error).message)
+      void recheckAi()
     }
   }
 
   const consume = async () => {
-    for await (const ev of api.generateDashboard(sourceId, goal)) {
+    for await (const ev of api.generateDashboard(sourceIds, goal)) {
       if (ev.type === 'error') {
         setError(ev.message)
+        void recheckAi() // if the AI went offline, the form says so
         return
       }
       if (ev.type === 'plan') {
@@ -71,8 +88,12 @@ export function NewDashboardPage() {
     return () => window.removeEventListener('beforeunload', warn)
   }, [building])
 
-  const source = sources.find((s) => s.id === sourceId)
-  const undefinedCount = source?.tables.flatMap((t) => t.columns).filter((c) => c.flag).length ?? 0
+  const chosen = sources.filter((s) => sourceIds.includes(s.id))
+  const unclear = chosen.map((s) => ({ s, n: s.tables.flatMap((t) => t.columns).filter((c) => c.flag).length })).filter((x) => x.n > 0)
+  // One source per dashboard on some plans: picking another replaces it.
+  const toggle = (id: string) => setSourceIds((ids) => (single ? [id]
+    : ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]))
+  const many = sources.length > 1 && !single
 
   if (phase !== 'form') {
     const done = steps.filter((s) => s.state === 'done').length
@@ -86,7 +107,7 @@ export function NewDashboardPage() {
         </p>
         {error && (
           <p className="error" role="alert">{error}{' '}
-            <button className="btn ghost small" onClick={() => { setPhase('form'); setSteps([]); setError(null) }}>Back</button>
+            <button className="btn ghost small" onClick={() => { setPhase('form'); setSteps([]); setError(null); reloadUsage() }}>Back</button>
           </p>
         )}
         <ol className="build-steps">
@@ -113,7 +134,12 @@ export function NewDashboardPage() {
     <div className="page narrow">
       <h1>New dashboard</h1>
       <p className="muted">Stardeck looks at your data and builds a dashboard. You can change anything afterwards.</p>
-      {loaded && sources.length === 0 ? (
+      {isFull(usage?.dashboards) ? (
+        <UpgradePanel icon={<LayoutDashboard size={26} aria-hidden />} title="Your dashboards are all in use">
+          Your {plan?.name ?? ''} plan includes {usage?.dashboards.limit} dashboard{usage?.dashboards.limit === 1 ? '' : 's'}, and
+          the sample doesn’t count. Delete one to build another, or upgrade for more.
+        </UpgradePanel>
+      ) : loaded && sources.length === 0 ? (
         <section className="empty new-empty">
           <span className="icon-tile large"><Database size={26} aria-hidden /></span>
           <h2>Connect some data first</h2>
@@ -123,24 +149,34 @@ export function NewDashboardPage() {
       ) : (
       <div className="panel new-form">
 
-      <label className="field">
-        <span>Data source</span>
-        <select value={sourceId} onChange={(e) => setSourceId(e.target.value)}>
-          {sources.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-        </select>
-        {source && (
-          <small className="muted">
-            {source.tables.length} {source.tables.length === 1 ? 'table' : 'tables'}: {source.tables.slice(0, 6).map((t) => t.name).join(', ')}
-            {source.tables.length > 6 ? '…' : ''}
-          </small>
-        )}
-      </label>
-      {undefinedCount > 0 && (
-        <p className="hint">
-          {undefinedCount} column{undefinedCount > 1 ? 's' : ''} in this source could be misread.{' '}
-          <Link to={`/sources/${sourceId}/definitions`}>Explain them</Link> for better results (optional).
-        </p>
-      )}
+      <fieldset className="field source-pick">
+        <legend>Data <em>{many ? '(pick one or more)' : sources.length > 1 ? '(pick one)' : ''}</em></legend>
+        <div className="source-options">
+          {sources.map((s) => {
+            const on = sourceIds.includes(s.id)
+            return (
+              <label key={s.id} className={`source-option${on ? ' on' : ''}`}>
+                <input type={many ? 'checkbox' : 'radio'} name="source" checked={on} onChange={() => toggle(s.id)} />
+                <span className="source-option-text">
+                  <strong>{s.name}</strong>
+                  <span className="muted small">
+                    {s.tables.length} {s.tables.length === 1 ? 'table' : 'tables'}: {s.tables.slice(0, 5).map((t) => t.name).join(', ')}
+                    {s.tables.length > 5 ? '…' : ''}
+                  </span>
+                </span>
+                {on && <Check size={16} className="source-check" aria-hidden />}
+              </label>
+            )
+          })}
+        </div>
+        {chosen.length > 1 && <small className="muted">Each chart uses one source; Stardeck picks the right one for each.</small>}
+      </fieldset>
+      {unclear.map(({ s, n }) => (
+        <p key={s.id} className="hint"><span>
+          {n} column{n > 1 ? 's' : ''} in {s.name} could be misread.{' '}
+          <Link to={`/sources/${s.id}/definitions`}>Explain them</Link> for better results (optional).
+        </span></p>
+      ))}
 
       <label className="field">
         <span>What should it focus on? <em>(optional)</em></span>
@@ -151,11 +187,18 @@ export function NewDashboardPage() {
         {GOAL_IDEAS.map((g) => <button key={g} className="chip" onClick={() => setGoal(g)}>{g}</button>)}
       </div>
 
+      {paused ? <AiPaused />
+        : buildsLeft === 0 && builds?.limit != null && (
+          <AiUsedUp what="AI dashboard build" limit={builds.limit} resetsAt={usage?.ai.resetsAt} />
+        )}
       <div className="form-actions">
-        <button className="btn primary large" disabled={!sourceId} onClick={generate}>
+        <button className="btn primary large" disabled={!sourceIds.length || paused || buildsLeft === 0} onClick={generate}>
           <Sparkles size={16} aria-hidden /> Generate dashboard
         </button>
         <button className="btn text large" onClick={() => navigate(-1)}>Cancel</button>
+        {buildsLeft !== null && buildsLeft > 0 && (
+          <span className="ai-left">{buildsLeft} of {builds?.limit} AI build{builds?.limit === 1 ? '' : 's'} left today</span>
+        )}
       </div>
       </div>
       )}

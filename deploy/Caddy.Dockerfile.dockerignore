@@ -1,0 +1,7 @@
+# The build context is the whole repo: send only what the Caddy image needs.
+*
+!frontend
+!deploy/Caddyfile
+!site
+frontend/node_modules
+frontend/dist

@@ -127,4 +127,14 @@ def render_schema(tables: list[TableInfo], defs: Definitions | None = None) -> s
     if defs.glossary:
         out.append("Business glossary:")
         out += [f"  {g.term}: {g.definition}" for g in defs.glossary]
+    shown = {t.name.lower() for t in tables if not t.error}
+    measures = [m for m in defs.measures if m.table.lower() in shown]
+    if measures:
+        out.append("")
+        out.append("MEASURES (agreed calculations; write MEASURE(name) instead of the formula, with the "
+                   "measure's table in the same SELECT's FROM or JOIN):")
+        for m in measures:
+            what = m.description or m.label or m.name
+            unit = f"; {m.currency}" if m.format == "currency" and m.currency else "; percent" if m.format == "percent" else ""
+            out.append(f"  MEASURE({m.name}) on {m.table} -- {what}{unit}")
     return "\n".join(out).strip()

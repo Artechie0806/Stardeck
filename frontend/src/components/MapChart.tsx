@@ -1,28 +1,32 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import { api } from '../api'
-import type { ChartSpec, QueryResult } from '../api/types'
+import type { Cell, ChartSpec, QueryResult } from '../api/types'
 import { deriveRoles, mapColumns } from '../lib/chartFit'
 import { formatCategory, formatValue, humanize } from '../lib/format'
 import { readChartColors, useTheme } from '../lib/themeContext'
+import { useViewClient } from '../lib/viewClient'
 
-interface Point { label: string; lat: number; lon: number; value: number | null }
-
-let configPromise: Promise<{ mapTiles: string; mapAttribution: string; geocoding: boolean }> | null = null
-const clientConfig = () => (configPromise ??= api.clientConfig())
+interface Point { label: string; lat: number; lon: number; value: number | null; raw: Cell }
 
 /** Bubble map on OpenStreetMap tiles (Leaflet). Place names are geocoded by the backend (cached). */
-export function MapChart({ spec, result }: { spec: ChartSpec; result: QueryResult }) {
+export function MapChart({ spec, result, onPick }: {
+  spec: ChartSpec; result: QueryResult; onPick?: (column: string, value: Cell) => void
+}) {
   const el = useRef<HTMLDivElement>(null)
   const map = useRef<L.Map | null>(null)
   const layer = useRef<L.LayerGroup | null>(null)
   const [status, setStatus] = useState<string | null>(null)
   const [legend, setLegend] = useState<{ value: number; radius: number }[] | null>(null)
   const { resolved } = useTheme()
+  const client = useViewClient() // the app's API, or a shared link's (cached places only)
 
   // Coordinates come straight from lat/lon columns, or from geocoding a place column.
   const plan = useMemo(() => planPoints(spec, result), [spec, result])
+  const pickColumn = plan.pickColumn
+  // Kept in a ref: a new callback each render mustn't redraw the markers (and re-fit the map).
+  const pickRef = useRef(onPick)
+  useEffect(() => { pickRef.current = onPick })
   const [geocoded, setGeocoded] = useState<Point[] | null>(null)
   const points = plan.direct ?? geocoded
 
@@ -32,12 +36,15 @@ export function MapChart({ spec, result }: { spec: ChartSpec; result: QueryResul
     const { names, rowsFor } = plan
     const run = async () => {
       const coords: Record<string, number[] | null> = {}
-      for (let round = 0; round < 10; round++) {
+      for (let round = 0; round < 40; round++) {
         if (cancelled) return
         setStatus(`Finding ${names.length - Object.keys(coords).length} places on the map…`)
-        const res = await api.geocode(names.filter((n) => !(n in coords)))
+        const known = Object.keys(coords).length
+        const res = await client.geocode(names.filter((n) => !(n in coords)))
         Object.assign(coords, res.places)
         if (!res.pending) break
+        // The lookup service is busy with another map: wait a moment instead of asking right away.
+        if (Object.keys(coords).length === known) await new Promise((r) => setTimeout(r, 1500))
       }
       if (cancelled) return
       const unknown = names.filter((n) => !coords[n])
@@ -46,7 +53,7 @@ export function MapChart({ spec, result }: { spec: ChartSpec; result: QueryResul
     }
     run().catch((e: Error) => { if (!cancelled) setStatus(`Map lookup failed: ${e.message}`) })
     return () => { cancelled = true }
-  }, [plan])
+  }, [plan, client])
 
   // Create the map once.
   useEffect(() => {
@@ -55,7 +62,7 @@ export function MapChart({ spec, result }: { spec: ChartSpec; result: QueryResul
     map.current = m
     layer.current = L.layerGroup().addTo(m)
     m.setView([20, 0], 2)
-    clientConfig().then((cfg) => L.tileLayer(cfg.mapTiles, { attribution: cfg.mapAttribution, maxZoom: 18 }).addTo(m))
+    client.config().then((cfg) => L.tileLayer(cfg.mapTiles, { attribution: cfg.mapAttribution, maxZoom: 18 }).addTo(m))
       .catch(() => {})
     const ro = new ResizeObserver(() => m.invalidateSize())
     ro.observe(el.current)
@@ -80,11 +87,11 @@ export function MapChart({ spec, result }: { spec: ChartSpec; result: QueryResul
       ).bindTooltip(
         `${p.value === null ? '' : `<strong>${formatValue(p.value, spec)}</strong><br>`}${escapeHtml(p.label)}`,
         { direction: 'top', offset: [0, -radius] },
-      ).addTo(g)
+      ).on('click', () => { if (pickColumn) pickRef.current?.(pickColumn, p.raw) }).addTo(g)
     }
     setLegend(sized ? sized.legend : null)
     if (points.length) m.fitBounds(L.latLngBounds(points.map((p) => [p.lat, p.lon])), { padding: [28, 28], maxZoom: 9 })
-  }, [points, spec, resolved])
+  }, [points, spec, resolved, pickColumn])
 
   return (
     <div className="map-wrap">
@@ -155,6 +162,8 @@ function niceStep(x: number) {
 /** Work out where each row goes: direct coordinates, or place names to look up. */
 function planPoints(spec: ChartSpec, result: QueryResult): {
   direct?: Point[]; names: string[]; rowsFor: (coords: Record<string, number[] | null>) => Point[]
+  /** The column a click on a point filters by (its label or place column). */
+  pickColumn?: string
 } {
   const roles = deriveRoles(result, spec)
   const cols = spec.lat && spec.lon ? { lat: spec.lat, lon: spec.lon } : spec.location ? { location: spec.location } : mapColumns(roles)
@@ -163,19 +172,22 @@ function planPoints(spec: ChartSpec, result: QueryResult): {
   const yi = idx(yName), li = idx(spec.label ?? cols?.location ?? roles.dims[0])
   const value = (r: Row) => (typeof r[yi] === 'number' ? (r[yi] as number) : null)
   const label = (r: Row) => (li >= 0 ? formatCategory(r[li]) : '')
+  const raw = (r: Row) => (li >= 0 ? r[li] : null)
+  const pickColumn = li >= 0 ? result.columns[li] : undefined
   if (cols?.lat && cols.lon) {
     const [la, lo] = [idx(cols.lat), idx(cols.lon)]
     const direct = result.rows.filter((r) => typeof r[la] === 'number' && typeof r[lo] === 'number')
-      .map((r) => ({ label: label(r), lat: r[la] as number, lon: r[lo] as number, value: value(r) }))
-    return { direct, names: [], rowsFor: () => direct }
+      .map((r) => ({ label: label(r), lat: r[la] as number, lon: r[lo] as number, value: value(r), raw: raw(r) }))
+    return { direct, names: [], rowsFor: () => direct, pickColumn }
   }
   const pi = idx(cols?.location)
   const names = [...new Set(result.rows.map((r) => formatCategory(r[pi])).filter(Boolean))]
   return {
     names,
+    pickColumn,
     rowsFor: (coords) => result.rows.flatMap((r) => {
       const c = coords[formatCategory(r[pi])]
-      return c ? [{ label: label(r), lat: c[0], lon: c[1], value: value(r) }] : []
+      return c ? [{ label: label(r), lat: c[0], lon: c[1], value: value(r), raw: raw(r) }] : []
     }),
   }
 }

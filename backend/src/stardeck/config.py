@@ -1,8 +1,10 @@
+import json
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -22,6 +24,9 @@ class Settings(BaseSettings):
     # "off" sends the switches used by LM Studio, vLLM, llama.cpp and Ollama; "server" sends
     # nothing (for strict OpenAI-compatible APIs that reject unknown fields).
     llm_thinking: Literal["off", "on", "server"] = "off"
+    # How many requests the AI server works on at once (LM Studio: "max concurrent predictions").
+    # Stardeck sends no more than this; one is always kept free for chat.
+    llm_parallel: int = 4
 
     # Everything Stardeck writes: metadata DB, encryption key, uploaded files, demo DB.
     data_dir: Path = Path("data")
@@ -41,6 +46,10 @@ class Settings(BaseSettings):
     geocoder_url: str = "https://nominatim.openstreetmap.org"
 
     query_timeout_s: int = 30
+    # At most this many queries run against one data source at a time (protects production DBs).
+    max_queries_per_source: int = 4
+    # Month the financial year starts: 4 = April (India), 1 = calendar year. Editable in Settings.
+    fiscal_year_start: int = 4
     max_upload_mb: int = 200
 
     cors_origins: list[str] = ["http://localhost:5173"]
@@ -49,6 +58,35 @@ class Settings(BaseSettings):
     # Stardeck is reachable from other machines. Leave unset for single-user local use.
     password: str | None = None
     session_hours: int = 24 * 14
+
+    # Hosted mode (Stardeck Cloud): many private workspaces on one server, accounts by email and
+    # invitation only, no local files as data sources. Self-hosted installs leave this off.
+    hosted: bool = False
+    # Public addresses (hosted): the app, public share links, and the marketing site.
+    public_url: str | None = None
+    share_url: str | None = None
+    site_url: str | None = None
+    # Where "Upgrade" links in the app go (a pricing page or a mailto: link).
+    upgrade_url: str | None = None
+    # Emails of the people who run the service (see model and server details in the app).
+    # Comma-separated, or a JSON list.
+    operator_emails: Annotated[list[str], NoDecode] = []
+    # Database hosts that must never be reachable, e.g. the server's own public IP (hosted).
+    ssrf_deny: Annotated[list[str], NoDecode] = []
+    # The public demo: its newest share link is what /demo opens (`stardeck-admin demo setup`).
+    demo_workspace_id: str = "ws-demo"
+    # Optional pings for each waitlist sign-up: an ntfy topic URL, and/or a Telegram bot and chat.
+    waitlist_ntfy_url: str | None = None
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+
+    @field_validator("operator_emails", "ssrf_deny", mode="before")
+    @classmethod
+    def _list(cls, v):
+        if isinstance(v, str):
+            v = v.strip()
+            return json.loads(v) if v.startswith("[") else [x.strip() for x in v.split(",") if x.strip()]
+        return v
 
     @property
     def metadata_url(self) -> str:

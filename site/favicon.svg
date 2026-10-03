@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <!-- Stardeck mark (see public/brand/stardeck-mark.svg) in Stardeck flare pink (reads on light and dark tabs). -->
+  <style>.m{fill:#ff3d7f}.l{stroke:#ff3d7f}</style>
+  <defs>
+    <mask id="c" maskUnits="userSpaceOnUse" x="-10" y="-10" width="120" height="120">
+      <path d="M-10 62H10C50 62 50 14 90 14H110V110H-10Z" fill="#fff"/>
+      <path d="M10 62C50 62 50 14 90 14" fill="none" stroke="#000" stroke-width="20" stroke-linecap="round"/>
+      <circle cx="90" cy="14" r="15" fill="#000"/>
+    </mask>
+  </defs>
+  <g class="m" mask="url(#c)">
+    <rect x="11" y="0" width="15" height="90" rx="4"/><rect x="32" y="0" width="15" height="90" rx="4"/>
+    <rect x="53" y="0" width="15" height="90" rx="4"/><rect x="74" y="0" width="15" height="90" rx="4"/>
+  </g>
+  <path class="l" d="M10 62C50 62 50 14 90 14" fill="none" stroke-width="8" stroke-linecap="round"/>
+  <circle class="m" cx="90" cy="14" r="9"/>
+</svg>

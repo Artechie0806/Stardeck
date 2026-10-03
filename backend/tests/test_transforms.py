@@ -4,9 +4,8 @@ import httpx
 import pytest
 
 from stardeck.config import Settings
-from stardeck.deps import get_llm
-from stardeck.llm import LLMClient
 from stardeck.transforms import Compiler, Recipe, TransformError, steps_adapter, with_prepared
+from tests.conftest import fake_ai
 
 BASE = "/api/sources/retail-demo/transforms"
 
@@ -127,11 +126,12 @@ def test_ai_suggests_a_validated_step(client):
         calls.append(json.loads(request.content))
         return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(replies[len(calls) - 1])}}]})
 
-    client.app.dependency_overrides[get_llm] = lambda: LLMClient(Settings(), transport=httpx.MockTransport(handler))
+    stub = fake_ai(client.app, handler)
+    stub.__enter__()
     try:
         out = client.post(f"{BASE}/suggest", json={"base": "orders", "steps": [], "request": "only completed orders"}).json()
     finally:
-        client.app.dependency_overrides.clear()
+        stub.__exit__(None, None, None)
     assert out["step"] == {"op": "filter_rows", "column": "sts", "operator": "eq", "value": "1", "value2": None}
     assert out["label"] == "Filtered: sts = 1" and out["preview"]["error"] is None
     assert "doesn't exist" in calls[1]["messages"][-1]["content"]

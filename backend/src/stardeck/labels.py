@@ -6,6 +6,7 @@ remain in tooltips and tables.
 """
 
 import re
+from collections.abc import Callable
 
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -95,7 +96,13 @@ def _ask(llm: LLMClient, labels: list[str], max_chars: int) -> dict[str, str]:
     return proposed
 
 
-def shorten(db: Session, llm: LLMClient | None, labels: list[str], max_chars: int) -> tuple[dict[str, str], bool]:
+def _key(db: Session, max_chars: int, label: str) -> str:
+    """Labels are often customer or product names, so each workspace keeps its own."""
+    return f"{db.info.get('workspace_id') or '-'}|{max_chars}|{label}"[:400]
+
+
+def shorten(db: Session, llm: LLMClient | None, labels: list[str], max_chars: int,
+            allow_ai: Callable[[], bool] | None = None) -> tuple[dict[str, str], bool]:
     """Short form for every label. Returns (mapping, whether the model was used).
 
     Results are cached whenever the model answered (after its one retry, trimming anything still
@@ -107,13 +114,14 @@ def shorten(db: Session, llm: LLMClient | None, labels: list[str], max_chars: in
     for label in unique:
         if len(label) <= max_chars:
             out[label] = label
-        elif hit := db.get(LabelRecord, f"{max_chars}|{label}"[:400]):
+        elif hit := db.get(LabelRecord, _key(db, max_chars, label)):
             out[label] = hit.short
         else:
             todo.append(label)
     proposed: dict[str, str] = {}
     used_ai = False
-    if todo and llm is not None:
+    # `allow_ai` is asked only when the AI is actually needed (it may count against an allowance).
+    if todo and llm is not None and (allow_ai is None or allow_ai()):
         try:
             proposed = _ask(llm, todo, max_chars)
             used_ai = True
@@ -129,6 +137,6 @@ def shorten(db: Session, llm: LLMClient | None, labels: list[str], max_chars: in
         taken.add(short)
         out[label] = short
         if used_ai:
-            db.merge(LabelRecord(key=f"{max_chars}|{label}"[:400], short=short))
+            db.merge(LabelRecord(key=_key(db, max_chars, label), short=short))
     db.commit()
     return out, used_ai

@@ -3,9 +3,12 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { Plus, Wand2 } from 'lucide-react'
 import { api, type DataSource, type PreparedTable } from '../api'
 import { ConfirmDelete } from '../components/ConfirmDelete'
+import { UpgradeNote, UpgradePanel } from '../components/Upgrade'
+import { usePlan } from '../lib/plan'
 
 /** A source's prepared tables (Power Query-style recipes), plus starting a new one. */
 export function TransformsPage() {
+  const locked = !usePlan().has('prepared_tables')
   const { id = '' } = useParams()
   const navigate = useNavigate()
   const [source, setSource] = useState<DataSource | null>(null)
@@ -44,7 +47,15 @@ export function TransformsPage() {
       </p>
       {error && <p className="error banner" role="alert">{error}</p>}
 
-      <form className="panel new-prep" onSubmit={start}>
+      {locked && (items?.length ? (
+        <UpgradeNote>Changing prepared tables is part of Stardeck Enterprise. These keep working in your charts.</UpgradeNote>
+      ) : items && (
+        <UpgradePanel icon={<Wand2 size={26} aria-hidden />} title="Prepare your data">
+          Filter, fix types, add calculated columns, merge and summarize tables, step by step and without changing your
+          database. Data preparation is part of Stardeck Enterprise.
+        </UpgradePanel>
+      ))}
+      {!locked && <form className="panel new-prep" onSubmit={start}>
         <h2><Wand2 size={16} aria-hidden /> New prepared table</h2>
         <div className="form-grid">
           <label className="field"><span>Start from</span>
@@ -57,15 +68,15 @@ export function TransformsPage() {
               onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_'))} /></label>
         </div>
         <div className="form-actions"><button className="btn primary" disabled={!base || !name}><Plus size={15} aria-hidden /> Create</button></div>
-      </form>
+      </form>}
 
-      {items?.length === 0 && <p className="muted">No prepared tables yet.</p>}
+      {items?.length === 0 && !locked && <p className="muted">No prepared tables yet.</p>}
       <div className="card-grid">
         {items?.map((t) => (
           <div key={t.name} className="dash-card linked">
             <div className="card-top">
               <span className="icon-tile"><Wand2 size={19} aria-hidden /></span>
-              <ConfirmDelete label={`Delete “${t.name}”?`} detail="Only the recipe is removed; your source data isn’t touched." title="Delete prepared table" onConfirm={() => remove(t.name)} />
+              {!locked && <ConfirmDelete label={`Delete “${t.name}”?`} detail="Only the recipe is removed; your source data isn’t touched." title="Delete prepared table" onConfirm={() => remove(t.name)} />}
             </div>
             <h2><Link to={`/sources/${id}/transforms/${t.name}`} className="card-link"><code>{t.name}</code></Link></h2>
             <p>From <code>{t.base}</code> · {t.steps.length} step{t.steps.length === 1 ? '' : 's'}</p>

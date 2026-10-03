@@ -3,9 +3,11 @@ import { Link } from 'react-router'
 import { LayoutDashboard, Plus } from 'lucide-react'
 import { api, type DashboardSummary, type DataSource } from '../api'
 import { ConfirmDelete } from '../components/ConfirmDelete'
+import { useCan } from '../lib/authContext'
 import { relativeTime } from '../lib/format'
 
 export function DashboardsPage() {
+  const canEdit = useCan('editor')
   const [dashboards, setDashboards] = useState<DashboardSummary[] | null>(null)
   const [sources, setSources] = useState<DataSource[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -33,7 +35,7 @@ export function DashboardsPage() {
           <h1>Dashboards</h1>
           <p className="muted">Live dashboards built from your data. Open one to explore, edit, or ask the assistant.</p>
         </div>
-        <Link to="/new" className="btn primary"><Plus size={16} aria-hidden /> New dashboard</Link>
+        {canEdit && <Link to="/new" className="btn primary"><Plus size={16} aria-hidden /> New dashboard</Link>}
       </div>
       {error && <p className="error" role="alert">{error}</p>}
 
@@ -45,9 +47,9 @@ export function DashboardsPage() {
           <span className="icon-tile large"><LayoutDashboard size={26} aria-hidden /></span>
           <h2>No dashboards yet</h2>
           <p>Connect a database or upload a spreadsheet, and Stardeck will build a dashboard for you.</p>
-          <Link to={sources.length ? '/new' : '/sources'} className="btn primary">
+          {canEdit && <Link to={sources.length ? '/new' : '/sources'} className="btn primary">
             {sources.length ? 'Create your first dashboard' : 'Connect data'}
-          </Link>
+          </Link>}
         </section>
       )}
 
@@ -56,7 +58,7 @@ export function DashboardsPage() {
           <div key={d.id} className="dash-card linked">
             <div className="card-top">
               <span className="icon-tile"><LayoutDashboard size={19} aria-hidden /></span>
-              <ConfirmDelete label={`Delete “${d.name}”?`} detail="Its widgets are deleted too. This can’t be undone." title="Delete dashboard" onConfirm={() => remove(d.id)} />
+              {canEdit && <ConfirmDelete label={`Delete “${d.name}”?`} detail="Its widgets are deleted too. This can’t be undone." title="Delete dashboard" onConfirm={() => remove(d.id)} />}
             </div>
             {/* The title is the link; its ::after stretches over the card, so the delete button isn't nested in it. */}
             <h2><Link to={`/d/${d.id}`} className="card-link">{d.name}</Link></h2>

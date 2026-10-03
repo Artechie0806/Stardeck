@@ -21,6 +21,7 @@ import yaml
 from sqlalchemy import create_engine, text
 
 from stardeck.config import get_settings
+from stardeck.context import SourceContext
 from stardeck.definitions import Definitions
 from stardeck.demo import retail
 from stardeck.llm import LLMClient, LLMError
@@ -73,7 +74,8 @@ def run_case(client, engine, tables, defs, case: dict, max_fixes: int) -> dict:
     # Ambiguous questions list other defensible readings (e.g. "orders" = all vs completed only).
     alternatives = [run_query(engine, sql) for sql in case.get("also_accept", [])]
     try:
-        w = generate_widget(client, engine, "sqlite", tables, defs, case["question"], max_attempts=max_fixes + 1)
+        ctx = SourceContext(id="eval", name="eval", engine=engine, dialect="sqlite", tables=tables, defs=defs)
+        w = generate_widget(client, ctx, case["question"], max_attempts=max_fixes + 1)
     except (LLMError, WidgetError) as exc:
         result.update(error=str(exc), sql=getattr(exc, "sql", None))
     else:

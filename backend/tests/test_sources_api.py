@@ -3,8 +3,7 @@ import sqlite3
 import httpx
 import yaml
 
-from stardeck.deps import get_llm
-from stardeck.llm import LLMClient
+from tests.conftest import fake_ai
 
 
 def test_demo_source_is_seeded_with_flagged_column(client, demo_db):
@@ -101,12 +100,12 @@ def test_ai_suggestions_are_saved_for_review(client):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"choices": [{"message": {"content": reply}}]})
 
-    state = client.app.state.stardeck
-    client.app.dependency_overrides[get_llm] = lambda: LLMClient(state.settings, transport=httpx.MockTransport(handler))
+    stub = fake_ai(client.app, handler)
+    stub.__enter__()
     try:
         res = client.post("/api/sources/retail-demo/suggest").json()
     finally:
-        client.app.dependency_overrides.clear()
+        stub.__exit__(None, None, None)
     assert res["suggested"] == 1  # the made-up column is ignored
     sts = next(c for t in res["source"]["tables"] if t["name"] == "orders" for c in t["columns"] if c["name"] == "sts")
     assert sts["source"] == "ai_suggested" and sts["definition"]["values"] == {"1": "Completed"}

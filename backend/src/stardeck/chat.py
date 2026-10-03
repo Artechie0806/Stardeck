@@ -9,6 +9,7 @@ Each agent has its own focused prompt.
 """
 
 import re
+from dataclasses import dataclass, field
 from typing import Literal
 
 import sqlglot
@@ -17,8 +18,10 @@ from sqlglot import exp
 
 from stardeck.analyst import analyse
 from stardeck.charts import ChartType, Stack
+from stardeck.context import Restriction, SourceContext
 from stardeck.db import DashboardRecord, SourceRecord
 from stardeck.llm import LLMClient
+from stardeck.principal import Principal
 from stardeck.query import DateRange, QueryError, UnsafeSQLError, run_widget_query
 from stardeck.router import Agent, route
 from stardeck.sources import SourceService
@@ -98,9 +101,9 @@ def _columns_text(src: SourceService, rec: SourceRecord) -> str:
     return "\n".join(lines)
 
 
-def _widget_payload(w: WidgetResult) -> dict:
+def _widget_payload(w: WidgetResult, source_id: str) -> dict:
     return {
-        "title": w.title, "summary": w.summary, "sql": w.sql, "spec": w.spec,
+        "sourceId": source_id, "title": w.title, "summary": w.summary, "sql": w.sql, "spec": w.spec,
         "dateFilter": {"table": w.date_filter[0], "column": w.date_filter[1]} if w.date_filter else None,
     }
 
@@ -141,6 +144,21 @@ def vague_request(request: str, vocabulary: set[str]) -> tuple[str, list[str]] |
     return None
 
 
+@dataclass
+class ChatScope:
+    """What one assistant request works with: the dashboard's sources, who asks, active filters."""
+
+    sources: list[SourceRecord]
+    ctxs: dict[str, SourceContext]  # by source id, built for `who` (row-level security included)
+    who: Principal
+    filters: dict[str, list[Restriction]] = field(default_factory=dict)  # dashboard filters by source id
+    filter_note: str = ""  # the filters in words, e.g. "City is Pune"
+
+    @property
+    def primary(self) -> SourceRecord:
+        return self.sources[0]
+
+
 class Assistant:
     def __init__(self, sources: SourceService):
         self.sources = sources
@@ -155,6 +173,8 @@ class Assistant:
                 vocab |= set(re.findall(r"[a-z]{3,}", ((c.definition or {}).get("description") or "").lower()))
         for g in out.glossary:
             vocab |= set(re.findall(r"[a-z0-9]+", g.term.lower()))
+        for m in out.measures:
+            vocab |= set(re.findall(r"[a-z0-9]+", f"{m['name']} {m.get('label') or ''}".lower().replace("_", " ")))
         return {v for v in vocab if len(v) > 2}
 
     def _suggestions(self, src: SourceRecord) -> list[str]:
@@ -165,40 +185,60 @@ class Assistant:
         opts += [f"Number of {t.name.replace('_', ' ')} by month" for t in biggest[:2]]
         return opts[:4]
 
-    def respond(self, llm: LLMClient, dash: DashboardRecord, src: SourceRecord, message: str,
+    def _pick_source(self, request: str, scope: ChatScope) -> SourceRecord | None:
+        """The source a new chart should come from: the only one, the one named, or the best word match."""
+        if len(scope.sources) == 1:
+            return scope.primary
+        text = request.lower()
+        named = [s for s in scope.sources if s.name.lower() in text]
+        if len(named) == 1:
+            return named[0]
+        words = set(re.findall(r"[a-z0-9]+", text))
+        words |= {w[:-1] for w in words if w.endswith("s")}
+        scores = sorted(((len(words & self._vocabulary(s)), i) for i, s in enumerate(scope.sources)), reverse=True)
+        if scores[0][0] > 0 and scores[0][0] > scores[1][0]:
+            return scope.sources[scores[0][1]]
+        return None
+
+    def respond(self, llm: LLMClient, dash: DashboardRecord, scope: ChatScope, message: str,
                 history: list[dict], rng: DateRange | None, compare: DateRange | None,
-                pending: str | None = None, agent: Agent | None = None, basis_sql: str | None = None) -> dict:
+                pending: str | None = None, agent: Agent | None = None, basis_sql: str | None = None,
+                basis_source: str | None = None) -> dict:
         """Route the message to the builder or the analyst; the reply says which one answered.
 
         `pending` (the builder's open question) and `agent` (set by a button, e.g. "Add as chart")
-        already decide the agent; otherwise the router model does.
+        already decide the agent; otherwise the router model does. Viewers only get the analyst:
+        the builder proposes changes they couldn't apply.
         """
-        if not agent:
+        if not scope.who.can("editor"):
+            agent = "analyst"
+        elif not agent:
             agent = "builder" if pending else route(llm, message, history, [w["title"] for w in dash.widgets or []])
         if agent == "analyst":
-            return {**self._analyse(llm, src, message, history, rng), "agent": "analyst"}
+            return {**self._analyse(llm, scope, message, history, rng), "agent": "analyst"}
         if basis_sql:  # a chart of an analyst answer: start from its checked query, skip classification
+            src = next((s for s in scope.sources if s.id == basis_source), scope.primary)
             request = (f"{message}\nStart from this query; it already returns the right numbers. Keep its "
                        f"filters and logic, and only reshape it for the chart:\n{basis_sql}")
-            return {**self._build(llm, src, request, rng, compare, None), "agent": "builder"}
-        return {**self._builder(llm, dash, src, message, history, rng, compare, pending), "agent": "builder"}
+            return {**self._build(llm, scope, src, request, rng, compare, None), "agent": "builder"}
+        return {**self._builder(llm, dash, scope, message, history, rng, compare, pending), "agent": "builder"}
 
-    def _analyse(self, llm: LLMClient, src: SourceRecord, question: str, history: list[dict],
+    def _analyse(self, llm: LLMClient, scope: ChatScope, question: str, history: list[dict],
                  rng: DateRange | None) -> dict:
-        svc = self.sources
-        a = analyse(llm, svc.engine(src), svc.dialect(src), svc.tables(src), svc.effective_definitions(src),
-                    question, history, rng, prepared=svc.prepared(src), timeout_s=svc.settings.query_timeout_s)
+        a = analyse(llm, [scope.ctxs[s.id] for s in scope.sources], question, history, rng,
+                    filters=scope.filters, filter_note=scope.filter_note)
         out: dict = {"text": a.answer, "analysis": {
             "queries": a.queries,
             "evidence": {"columns": a.evidence.columns, "rows": a.evidence.rows, "truncated": a.evidence.truncated}
             if a.evidence else None,
             "chartRequest": a.chart_request,
+            "sourceId": a.source_id,
         }}
         if a.follow_ups:
             out["options"] = a.follow_ups
         return out
 
-    def _builder(self, llm: LLMClient, dash: DashboardRecord, src: SourceRecord, message: str,
+    def _builder(self, llm: LLMClient, dash: DashboardRecord, scope: ChatScope, message: str,
                  history: list[dict], rng: DateRange | None, compare: DateRange | None,
                  pending: str | None = None) -> dict:
         """`pending` is the request the assistant last asked a question about; the message answers it."""
@@ -207,8 +247,10 @@ class Assistant:
             message = f"{pending}\n(My answer to your question: {message})"
         widgets = dash.widgets or []
         widget_lines = "\n".join(f"{w['id']} | {w['spec']['type']} | {w['title']}" for w in widgets) or "(none yet)"
-        messages = [{"role": "system", "content": PROMPT.format(widgets=widget_lines,
-                                                               columns=_columns_text(self.sources, src))}]
+        columns = "\n\n".join(
+            (f'Source "{s.name}":\n' if len(scope.sources) > 1 else "") + _columns_text(self.sources, s)
+            for s in scope.sources)
+        messages = [{"role": "system", "content": PROMPT.format(widgets=widget_lines, columns=columns)}]
         for h in history[-6:]:
             if h.get("role") in ("user", "assistant") and h.get("text"):
                 messages.append({"role": h["role"], "content": str(h["text"])[:1000]})
@@ -232,15 +274,21 @@ class Assistant:
         match intent.intent:
             case "add_widget":
                 request = intent.request or message
-                if not answered and (question := vague_request(message, self._vocabulary(src))):
+                vocab = set().union(*(self._vocabulary(s) for s in scope.sources))
+                if not answered and (question := vague_request(message, vocab)):
                     text, options = question
-                    return {"text": text, "options": options or self._suggestions(src), "pending": message}
-                return self._build(llm, src, request, rng, compare, None)
+                    return {"text": text, "options": options or self._suggestions(scope.primary), "pending": message}
+                src = self._pick_source(f"{message} {request}", scope)
+                if src is None:
+                    return {"text": "Which data should I use for that?", "options": [s.name for s in scope.sources][:4],
+                            "pending": message}
+                return self._build(llm, scope, src, request, rng, compare, None)
             case "modify_widget" if target:
                 change = intent.request or message
                 req = (f"Rebuild the widget \"{target['title']}\" ({target['summary']}). Its current SQL is:\n"
                        f"{target['sql']}\nApply this change: {change}")
-                return self._build(llm, src, req, rng, compare, target)
+                src = next((s for s in scope.sources if s.id == (target.get("sourceId") or dash.source_id)), scope.primary)
+                return self._build(llm, scope, src, req, rng, compare, target)
             case "change_chart_type" if target and (intent.chart_type or intent.stack):
                 chart, stack_word = _chart_words(message, intent.chart_type or target["spec"]["type"])
                 intent.stack = stack_word or intent.stack
@@ -265,7 +313,7 @@ class Assistant:
                 return {"text": f"Remove **{target['title']}** from the dashboard?",
                         "proposal": {"kind": "remove_widget", "widgetId": target["id"], "widgetTitle": target["title"]}}
             case "define_column":
-                return self._define(src, intent)
+                return self._define(scope, intent)
             case "explain_widget" if target:
                 when = ("It follows the dashboard's date filter on "
                         f"{target['dateFilter']['table']}.{target['dateFilter']['column']}."
@@ -280,50 +328,53 @@ class Assistant:
             "I can add charts, change or remove widgets, and remember what columns mean. "
             "Try \"Revenue by month\" or \"sts 9 means refunded\".")}
 
-    def _build(self, llm, src, request, rng, compare, replacing: dict | None) -> dict:
-        svc = self.sources
-        engine, dialect = svc.engine(src), svc.dialect(src)
+    def _build(self, llm: LLMClient, scope: ChatScope, src: SourceRecord, request: str, rng: DateRange | None,
+               compare: DateRange | None, replacing: dict | None) -> dict:
+        ctx = scope.ctxs[src.id]
         try:
-            w = generate_widget(llm, engine, dialect, svc.tables(src), svc.effective_definitions(src), request,
-                                prepared=svc.prepared(src),
-                                timeout_s=svc.settings.query_timeout_s)
+            w = generate_widget(llm, ctx, request)
         except WidgetError as exc:
             return {"text": f"I couldn't build that. {exc}"}
-        payload = _widget_payload(w)
+        payload = _widget_payload(w, src.id)
         preview = {"columns": w.result.columns, "rows": w.result.rows, "truncated": w.result.truncated}
-        if w.date_filter and rng:  # preview with the dashboard's current date range
+        filters = scope.filters.get(src.id, [])
+        if (w.date_filter and rng) or filters:  # preview the way the dashboard will show it
             try:
-                r = run_widget_query(engine, w.sql, dialect, kpi=w.spec["type"] == "kpi", date_filter=w.date_filter,
-                                     prepared=svc.prepared(src),
-                                     rng=rng, compare=compare, timeout_s=svc.settings.query_timeout_s)
+                r = run_widget_query(ctx, w.sql, kpi=w.spec["type"] == "kpi", date_filter=w.date_filter,
+                                     rng=rng, compare=compare, filters=filters)
                 preview = {"columns": r.columns, "rows": r.rows, "truncated": r.truncated}
             except (QueryError, UnsafeSQLError):
                 pass
         payload["result"] = preview
         notes = " ".join(w.notes)
-        unknown = _unknown_columns_used(w.sql, dialect, svc, src)
+        unknown = _unknown_columns_used(w.sql, ctx.dialect, self.sources, src)
         ask = (f"\n\nI wasn't sure what **{unknown[0]}** means, so I went by its sample values. "
                "Tell me what it means and I'll remember it.") if unknown else ""
+        where = f" (from {src.name})" if len(scope.sources) > 1 else ""
         if replacing:
             text = f"Here's the updated **{replacing['title']}**. Replace the current version?"
             proposal = {"kind": "replace_widget", "widgetId": replacing["id"], "widgetTitle": replacing["title"],
                         "widget": payload}
         else:
-            text = f"Here's **{w.title}**. Add it to the dashboard?"
+            text = f"Here's **{w.title}**{where}. Add it to the dashboard?"
             proposal = {"kind": "add_widget", "widget": payload}
         return {"text": text + (f" ({notes})" if notes else "") + ask, "proposal": proposal}
 
-    def _define(self, src: SourceRecord, intent: ChatIntent) -> dict:
-        out = self.sources.to_out(src)
+    def _define(self, scope: ChatScope, intent: ChatIntent) -> dict:
         col_name = (intent.column or "").strip().lower()
-        matches = [(t.name, c.name) for t in out.tables for c in t.columns
-                   if c.name.lower() == col_name and (not intent.table or t.name.lower() == intent.table.lower())]
-        if not matches:  # the model may have guessed the table wrong; fall back to any table
-            matches = [(t.name, c.name) for t in out.tables for c in t.columns if c.name.lower() == col_name]
+        matches: list[tuple[str, str, str]] = []
+        for strict in (True, False):  # the model may have guessed the table wrong; then any table
+            for src in scope.sources:
+                out = self.sources.to_out(src)
+                matches += [(src.id, t.name, c.name) for t in out.tables for c in t.columns
+                            if c.name.lower() == col_name
+                            and (not strict or not intent.table or t.name.lower() == intent.table.lower())]
+            if matches:
+                break
         if not matches:
             return {"text": f"I couldn't find a column called \"{intent.column}\". Check the name on the "
                             "Definitions page."}
-        table, column = matches[0]
+        source_id, table, column = matches[0]
         definition = {k: v for k, v in {
             "description": (intent.description or "").strip() or None,
             "unit": (intent.unit or "").strip() or None,
@@ -333,7 +384,8 @@ class Assistant:
             return {"text": f"What does **{table}.{column}** mean? For example: \"{column} is the order status\"."}
         return {"text": f"Got it. Here's how I'd record **{table}.{column}**. Every chart that uses it will "
                         "follow this.",
-                "proposal": {"kind": "definition", "table": table, "column": column, "definition": definition}}
+                "proposal": {"kind": "definition", "sourceId": source_id, "table": table, "column": column,
+                             "definition": definition}}
 
 
 def _chart_words(message: str, chart: str) -> tuple[str, str | None]:

@@ -61,6 +61,8 @@ export interface DateRange {
 
 export interface Widget {
   id: string
+  /** The data source this widget queries (older widgets: the dashboard's main source). */
+  sourceId?: string
   title: string
   /** Plain-English description of what the widget shows. */
   summary: string
@@ -71,6 +73,8 @@ export interface Widget {
   dateFilter?: DateFilter | null
   result?: QueryResult
   error?: string
+  /** Keys of active dashboard filters that don't reach this widget. */
+  unaffected?: string[]
 }
 
 /** What the widget engine returns for a plain-English request. */
@@ -93,20 +97,52 @@ export interface QueryRequest {
   compare?: DateRange
 }
 
-export type DatePreset = 'last_30d' | 'last_90d' | 'this_year' | 'last_year' | 'all'
+export type DatePreset =
+  | 'last_7d' | 'last_30d' | 'last_90d' | 'last_12m'
+  | 'this_month' | 'last_month' | 'this_quarter' | 'last_quarter'
+  | 'this_year' | 'last_year' | 'this_fy' | 'last_fy'
+  | 'all' | 'custom'
 
 export interface DashboardSummary {
   id: string
   name: string
   description: string
   sourceId: string
+  sourceIds: string[]
   widgetCount: number
   updatedAt: string
+}
+
+/** A filter (slicer) saved on a dashboard. `values` is its default selection (empty = all). */
+export interface FilterDef {
+  id: string
+  sourceId: string
+  table: string
+  column: string
+  label: string
+  values: Cell[]
+}
+
+/** A filter in effect while viewing: a slicer's selection, or a cross-filter from clicking a chart. */
+export interface ActiveFilter {
+  key: string
+  sourceId: string
+  table: string
+  column?: string | null
+  values?: Cell[]
+  expr?: string | null
+  value?: Cell
+  label: string
+  /** Shared links: the chart column that was clicked (the server traces it again on every run). */
+  pick?: string
 }
 
 export interface Dashboard extends Omit<DashboardSummary, 'widgetCount'> {
   widgets: Widget[]
   datePreset: DatePreset
+  /** The default range when datePreset is "custom". */
+  dateRange?: DateRange | null
+  filters: FilterDef[]
 }
 
 export type DefinitionSource = 'user' | 'chat' | 'ai_suggested'
@@ -149,6 +185,28 @@ export interface GlossaryTerm {
 
 export type SourceKind = 'postgres' | 'mysql' | 'sqlite' | 'csv'
 
+export interface Measure {
+  name: string
+  label?: string | null
+  description?: string | null
+  table: string
+  expression: string
+  format: 'number' | 'currency' | 'percent'
+  currency?: string | null
+  up_is_good?: boolean
+  source?: DefinitionSource
+}
+
+export interface Relationship {
+  table: string
+  column: string
+  refTable: string
+  refColumn: string
+  origin: 'database' | 'inferred' | 'user'
+  key: string
+  ignored: boolean
+}
+
 export interface DataSource {
   id: string
   name: string
@@ -162,6 +220,8 @@ export interface DataSource {
   tables: TableInfo[]
   profiledAt?: string | null
   profileError?: string | null
+  measures: Measure[]
+  relationships: Relationship[]
 }
 
 export type SourceConfig =
@@ -177,6 +237,7 @@ export interface TestResult {
 
 /** A widget built by the engine, before it has an id or a place on a dashboard. */
 export interface WidgetDraft {
+  sourceId?: string
   title: string
   summary: string
   sql: string
@@ -187,7 +248,7 @@ export interface WidgetDraft {
 
 /** Something the assistant proposes; nothing changes until the user confirms. */
 export type ChatProposal =
-  | { kind: 'definition'; table: string; column: string; definition: ColumnDefinition }
+  | { kind: 'definition'; sourceId?: string; table: string; column: string; definition: ColumnDefinition }
   | { kind: 'add_widget'; widget: WidgetDraft }
   | { kind: 'replace_widget'; widgetId: string; widgetTitle: string; widget: WidgetDraft }
   | { kind: 'change_type'; widgetId: string; widgetTitle: string; type: ChartType; stack?: Stack }
@@ -211,10 +272,13 @@ export type ChatAgent = 'builder' | 'analyst'
 
 /** The analyst's working: the queries it ran and the last result, so its numbers can be checked. */
 export interface Analysis {
-  queries: { sql: string; rows: number }[]
+  /** `dates`: the dashboard's period, applied to a query that didn't set dates itself. */
+  queries: { sql: string; rows: number; dates?: { table: string; column: string; start: string; end: string } }[]
   evidence: QueryResult | null
   /** A chart request the builder can turn into a widget ("Add as chart"). */
   chartRequest: string | null
+  /** The source the evidence came from (the chart is built there). */
+  sourceId?: string | null
 }
 
 /** Streamed while a dashboard is generated, so progress shows widget by widget. */
@@ -239,6 +303,128 @@ export interface WidgetPatch {
   stack?: Stack
   dateFilter?: DateFilter
   clearDateFilter?: boolean
+}
+
+// ---------- People and settings ----------
+
+export type Role = 'viewer' | 'editor' | 'admin'
+export type AuthMode = 'open' | 'password' | 'users'
+
+export interface CurrentUser {
+  id: string
+  username: string
+  name: string
+  role: Role
+}
+
+export interface WorkspaceInfo {
+  id: string
+  name: string
+  plan: 'community' | 'enterprise' | 'self_hosted'
+}
+
+export interface AuthStatus {
+  mode: AuthMode
+  required: boolean
+  authenticated: boolean
+  user: CurrentUser | null
+  /** Stardeck Cloud: people sign in with their email, into their own workspace. */
+  hosted?: boolean
+  workspace?: WorkspaceInfo | null
+}
+
+/** An invitation or password-reset link. */
+export interface InviteInfo {
+  kind: 'invite' | 'reset'
+  email: string
+  workspace: string
+}
+
+/** Viewers only see rows of `table` where `column` is one of `values` (and rows linked to them). */
+export interface AccessRule {
+  sourceId: string
+  table: string
+  column: string
+  values: Cell[]
+}
+
+export interface UserAccount {
+  id: string
+  username: string
+  name: string
+  role: Role
+  rules: AccessRule[]
+  disabled: boolean
+  createdAt: string
+  lastLoginAt: string | null
+}
+
+export type Feature = 'people' | 'measures' | 'relationships' | 'prepared_tables' | 'multi_source'
+
+/** What the workspace's plan includes (null limit = no limit; sample data never counts). */
+export interface PlanInfo {
+  id: 'community' | 'enterprise' | 'self_hosted'
+  name: string
+  features: Feature[]
+  /** "Made with Stardeck" on public links. */
+  badge: boolean
+  limits: {
+    sources: number | null
+    dashboards: number | null
+    sourcesPerDashboard: number
+    uploadMb: number | null
+    aiGenerationsPerDay: number | null
+    aiMessagesPerDay: number | null
+  }
+}
+
+export interface Allowance { used: number; limit: number | null }
+export interface Usage {
+  sources: Allowance
+  dashboards: Allowance
+  /** Today's AI use (resets at midnight, India time). */
+  ai: { generation: Allowance; assistant: Allowance; resetsAt: string }
+}
+
+export interface AppConfig extends ViewConfig {
+  hosted?: boolean
+  plan?: PlanInfo
+  /** Where "Upgrade" links go. */
+  upgradeUrl?: string | null
+  /** Where public share links live (hosted: a separate host); null = this app's address. */
+  shareUrl?: string | null
+}
+
+/** What showing a dashboard needs from the server's settings. */
+export interface ViewConfig {
+  mapTiles: string
+  mapAttribution: string
+  geocoding: boolean
+  /** Month the financial year starts (4 = April). */
+  fiscalYearStart: number
+}
+
+/** A public, read-only link to a dashboard. */
+export interface ShareLink {
+  token: string
+  createdAt: string
+  expiresAt: string | null
+  views: number
+  lastViewedAt: string | null
+  active: boolean
+}
+
+/** A dashboard opened through a share link: no SQL, plus what the page needs. */
+export interface SharedDashboard extends DashboardDef {
+  share: { badge: boolean; demo: boolean; siteUrl: string | null }
+  config: ViewConfig
+}
+
+export interface ColumnValues {
+  values: Cell[]
+  more: boolean
+  /** Documented meanings of coded values, e.g. {"1": "Completed"}. */
+  labels: Record<string, string>
 }
 
 export interface Health {

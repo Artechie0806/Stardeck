@@ -25,3 +25,30 @@ glossary:
       which is already in INR.
   - term: average order value
     definition: Revenue divided by the number of completed orders.
+measures:
+  - name: revenue
+    label: Revenue
+    description: Money from completed orders, in INR.
+    table: orders
+    expression: SUM(CASE WHEN sts = 1 THEN amt END) / 100.0
+    format: currency
+    currency: INR
+  - name: completed_orders
+    label: Completed orders
+    description: Number of orders that were completed.
+    table: orders
+    expression: SUM(CASE WHEN sts = 1 THEN 1 ELSE 0 END)
+  - name: average_order_value
+    label: Average order value
+    description: Revenue divided by the number of completed orders, in INR.
+    table: orders
+    expression: AVG(CASE WHEN sts = 1 THEN amt / 100.0 END)
+    format: currency
+    currency: INR
+  - name: refund_rate
+    label: Refund rate
+    description: Share of all orders that were refunded.
+    table: orders
+    expression: 100.0 * SUM(CASE WHEN sts = 9 THEN 1 ELSE 0 END) / COUNT(*)
+    format: percent
+    up_is_good: false

@@ -1,5 +1,154 @@
 # Changelog
 
+## 1.8.0 — 2026-10-03
+
+- **PDF export keeps every chart whole.**
+  - **Pages:** charts used to be cut in two at page breaks. Export PDF now lays the dashboard out at A4 landscape width, in rows that each stay on one page.
+  - **Tables:** they show every row.
+  - **Dark mode:** the PDF prints in the light theme, even when the screen is dark. Before, text came out white on white.
+  - **Ctrl+P:** it does the same on the read-only view. In the editor, it opens that view.
+- **Public share links.**
+  - **Making links:** editors make a link from the Share dialog. Anyone with it sees the dashboard read-only, without signing in, and can change dates, use the saved filters and click charts to filter.
+  - **What's never shared:** SQL, the assistant and editing.
+  - **Managing links:** links can expire, editors can turn them off, and each one counts its views.
+  - **Badge:** Community links show a small "Made with Stardeck" badge.
+- **Safe to open to the internet.** Public calls carry no SQL. The server traces clicks itself, uses no AI, and only shows map places it has already looked up. They are rate limited per address and capped server-wide.
+- **The public demo.** `stardeck-admin demo setup` builds a demo workspace with City and Category filters and a share link. `/demo` opens it with a four-step tour, and a "Join the waitlist" bar.
+- **The website (`site/`).**
+  - **Pages:** a landing page with the hero video, the live demo, how it works, pricing in rupees, FAQ and a waitlist form.
+  - **Legal:** privacy policy and terms, written for India's DPDP Act. Have both reviewed before charging anyone.
+- **Fewer assistant messages a day,** to fit one GPU: Community 5 (was 30), Enterprise 60 (was 400). AI suggestions still count as messages; dashboard builds are unchanged (3 and 30).
+- **Waitlist sign-ups from the website.** They're protected against bots, rate limited, and can ping you on ntfy or Telegram.
+- **Deployment (`deploy/`).**
+  - **Running it:** Caddy with automatic HTTPS for the site, the app and the share host, plus Docker Compose for the VPS.
+  - **Backups:** encrypted with age and copied off the server with rclone.
+  - **Runbook:** a step-by-step guide covering Tailscale and LM Studio.
+- **For the operator:** `stardeck-admin share list|revoke` lists and turns off links. Deleting a workspace removes its links too.
+- **Fixed:** the assistant's answers covered all dates while saying they covered the dashboard's. Asked which city brings in the most revenue "this year", it gave Mumbai's all-time ₹1.54 Cr instead of ₹94.9 L. Queries that don't set dates themselves now get the dashboard's period, and "How I worked it out" says so.
+- **Fixed:** counting rows of a join could filter by the wrong date. "Completed orders by city" counted orders by the customers' signup date, because customers came first in the query. Counting now follows the table being counted (the "many" side of the join), using inferred relationships too, as CSV files have no declared ones.
+- **Fixed:** the assistant's suggested follow-up questions were cut at apostrophes ("s revenue?" for "…Mumbai's revenue?").
+- **Fixed:** the check that every route with an id is covered by the isolation test had silently stopped checking anything after the FastAPI upgrade. It reads the routes from the API schema now.
+
+## 1.7.0 — 2026-10-03
+
+Built for one AI server shared by many people, such as a single home GPU.
+
+- **AI allowances are enforced** on hosted plans. Community gets 3 dashboard builds and 30 assistant messages a day, Enterprise 30 and 400.
+  - They reset at midnight, India time.
+  - AI suggestions count as messages.
+  - Failures on our side don't count.
+  - The assistant and New dashboard show how many are left today, and say plainly when they're used up.
+- **"AI is paused."** When the AI server is off, the assistant and New dashboard say so, and everything else keeps working: dashboards, filters, sharing.
+  - Stardeck stops waiting on timeouts: after one failed call it answers at once.
+  - The app checks again every minute, or straight away with "Check again".
+- **A queue in front of the AI.**
+  - `STARDECK_LLM_PARALLEL` (default 4) sets how many requests go to the AI server at once.
+  - One slot is always kept for the assistant, so dashboard builds can't crowd out chat.
+  - When it's too busy, people get "The AI is busy. Try again in a minute." instead of a long hang.
+- **Dashboard builds:**
+  - Closing the page stops the build: unstarted widgets are skipped, and nothing is saved.
+  - At most two builds run at once, one per workspace.
+  - Long builds send keep-alive pings so proxies don't cut them off.
+- **Chart labels** use the AI only while it's free and within their own allowance, and are shortened without it otherwise.
+
+## 1.6.0 — 2026-10-03
+
+- **Community and Enterprise plans** for hosted workspaces.
+  - **Community:**
+    - one data source and two dashboards (the sample data doesn't count);
+    - one data source per dashboard;
+    - uploads up to 25 MB;
+    - every chart type, filters, the assistant and the analyst.
+  - **Enterprise adds:** people and data access rules, measures, editing table links, data preparation, several data sources per dashboard, and bigger uploads.
+  - **Self-hosted:** stays unlimited.
+- **The server enforces each limit,** even when two requests race for the last slot, or a dashboard finishes generating after another one took the last slot.
+- **The app locks things up front** with a short note and an upgrade link instead of failing halfway: People, Measures, table links, Prepared tables, the second-source checkbox, "Add data source" and New dashboard.
+  - Settings shows the plan and how much of it is in use.
+  - The add-data-source dialog no longer offers server file paths when hosted.
+- **Downgrading never breaks dashboards.** Measures, prepared tables and multi-source dashboards that already exist keep working, read-only.
+- **For the operator:**
+  - `stardeck-admin workspace limits` grants exceptions (e.g. three data sources, or measures for a trial);
+  - `STARDECK_UPGRADE_URL` sets where upgrade links go.
+
+## 1.5.0 — 2026-10-03
+
+Groundwork for Stardeck Cloud: one server, many private workspaces. Self-hosted installs keep
+working as before; everything hosted sits behind `STARDECK_HOSTED`.
+
+- **Workspaces.** Data sources, dashboards, people and settings belong to a workspace, and every
+  database query is limited to the signed-in person's workspace automatically. That covers counts,
+  subqueries, unions and the rest, and it fails loudly instead of leaking. Existing installs move
+  into a "default" workspace on first start, after a backup of the database (`data/backups/`).
+  A test calls every route that takes an id as one workspace with another's ids.
+- **Hosted sign-in.** Accounts come from invitation links; people sign in with their email. New:
+  password-reset links, "Change password" from the account card, sign-ins that survive restarts
+  (stored hashed in the database), and limits on repeated wrong passwords. A suspended workspace
+  can't sign in.
+- **Operator CLI** (`stardeck-admin`):
+  - the waitlist: import a form export, approve (creates the workspace and prints an invitation email), reject;
+  - workspaces: create, list, change plan, suspend, delete;
+  - invitations and reset links, signing someone out everywhere, and backups.
+  See `docs/hosting.md`.
+- **Safe to host.**
+  - No file paths on the server as data sources: uploads only, and file sources can only be renamed.
+  - Deleting an upload never touches files outside the uploads folder. Self-hosted gets this too: before, a source could be pointed at another file and deleting it removed that file.
+  - Hosted database connections must go to the public internet. Private networks, cloud metadata and Tailscale addresses are refused, and each connection is pinned to the checked address.
+  - Cross-site requests are refused, and the app's cookie is Secure.
+  - AI errors no longer reveal the AI server's address.
+- **Steadier with a remote AI server.**
+  - An AI server that's off now fails in seconds instead of holding requests for minutes, and the AI status is cached.
+  - Closing the page during dashboard generation stops the remaining work instead of blocking the server.
+  - Uploads are size-checked as they arrive and no longer stall other requests.
+  - Map place lookups no longer queue behind each other.
+  - Old database connections are closed after a while.
+- Maps: places still waiting for a lookup are retried instead of being shown as "not found".
+
+## 1.4.0 — 2026-10-03
+
+- **Filters (slicers).** Editors add a filter for any column with "+ Filter" and pick values from a
+  searchable list (code values show their documented meanings). Filters follow the links between tables:
+  filtering customers to Pune also filters their orders and order items. A chart a filter can't reach
+  says "Not filtered by City" instead of quietly ignoring it. Changing a filter only changes your view;
+  "Make default" saves the dates and selections for everyone.
+- **Cross-filtering.** Click a bar, slice, point or tile to filter the whole dashboard by it. Clicks on
+  computed categories (a month, a code turned into a label) are traced back to the underlying column.
+  The clicked chart keeps every bar and highlights the one picked; click it again, or the chip, to clear.
+- **Financial year, quarters and custom dates.** New ranges: this/last quarter, this/last financial
+  year (labelled, e.g. FY 2026-27), last 90 days, and a custom from–to range. The financial year starts
+  in April by default (change it in Settings); quarters follow it, and the assistant and analyst use it too.
+- **People, roles and row-level security.** Turn on sign-in in Settings by creating an admin account,
+  then add people on the new People page as viewers (open dashboards, use filters, ask the analyst),
+  editors (also build and change things) or admins (also connect data, manage people and settings).
+  Viewers can be limited to rows, e.g. "customers.city is Pune". Rules apply to everything they see
+  (dashboards, filters, the analyst) and follow table links; the rule editor shows which tables a rule
+  limits and which stay fully visible. Rules are enforced by rewriting the SQL syntax tree, and queries
+  that try to get around them (other schemas, look-alike CTEs, table functions) are refused. The
+  shared password (`STARDECK_PASSWORD`) still works until the first account is created.
+- **Measures.** Define a calculation once, e.g. Revenue = `SUM(CASE WHEN sts = 1 THEN amt END) / 100.0`,
+  on the Definitions page. Check it against your data before saving, or let the AI suggest measures from
+  your glossary. Charts, the assistant and the analyst use `MEASURE(revenue)`, so every number agrees,
+  and a chart of a measure shows it the measure's way (money, percent, lower is better). The retail demo
+  ships with four.
+- **How tables connect.** The Definitions page lists table links: from the database, detected from names
+  like `customer_id`, or added by you. Turn off a wrong one or add a missing one.
+- **Several data sources on one dashboard.** Pick more than one source when generating a dashboard (each
+  chart uses one, picked per chart), or add sources from the dashboard's Data menu. Charts show their
+  source when there are several, filters only reach charts from their own source, and the assistant asks
+  which data to use when it isn't clear.
+- **Faster dashboards on big databases.** Charts appear one by one as their queries finish instead of
+  waiting for the slowest, and earlier results stay up (dimmed) while new ones load. Each source runs at
+  most 4 queries at once (`STARDECK_MAX_QUERIES_PER_SOURCE`) so a dashboard can't swamp a database, and
+  filters run inside the database.
+- Viewers only see what they can use: no Data sources, New dashboard, layout editing or chart menus.
+  The phone header shrinks to an avatar and a sign-out icon.
+- After adding a person or setting a new password, Stardeck shows the sign-in details to send them
+  (address, username, password, with a copy button), and the People list says who signs in as what.
+  The sign-in page can show the password, and explains a failed sign-in (username, not full name;
+  a password the browser filled in).
+- Menus and confirmations opened inside a dialog (like removing a person) appear above it and can be clicked.
+- A wider sidebar with roomier links. Its footer puts your account and sign-out in one card, with a labelled theme switch below.
+- The sidebar shows "AI connected" (or "AI not connected" / "AI model not loaded") instead of the model's name; admins see the model and server on hover.
+
 ## 1.3.0 — 2026-10-03
 
 - **Pivot column** (rows → columns): one new column per value, filled with sum/average/count/min/max

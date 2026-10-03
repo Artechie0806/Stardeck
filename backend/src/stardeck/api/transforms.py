@@ -1,11 +1,22 @@
 """/api/sources/{id}/transforms: prepared tables (Power Query-style), previews and AI-suggested steps."""
 
-from fastapi import APIRouter, HTTPException
+import dataclasses
+
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import Field, ValidationError
 
 from stardeck.db import SourceRecord
-from stardeck.deps import LLMDep, SessionDep, StateDep
+from stardeck.deps import (
+    BackgroundLLMDep,
+    SessionDep,
+    StateDep,
+    WhoDep,
+    ai_error,
+    require,
+    require_feature,
+)
 from stardeck.llm import LLMError
+from stardeck.principal import SYSTEM
 from stardeck.query import QueryError, UnsafeSQLError, run
 from stardeck.sources import ApiModel
 from stardeck.transforms import (
@@ -19,7 +30,8 @@ from stardeck.transforms import (
     steps_adapter,
 )
 
-router = APIRouter(prefix="/sources/{source_id}/transforms", tags=["transforms"])
+# Editors only: recipes see all of a source's rows (security rules apply to viewers).
+router = APIRouter(prefix="/sources/{source_id}/transforms", tags=["transforms"], dependencies=[Depends(require("editor"))])
 PREVIEW_ROWS = 100
 
 
@@ -74,8 +86,8 @@ def _preview(state, rec, recipe: Recipe, upto: int | None, editing: str | None) 
     except TransformError as exc:
         return {"error": str(exc), "errorStep": exc.step, "labels": labels, "columns": [], "rows": []}
     try:
-        res = run(svc.engine(rec), sql, svc.dialect(rec), state.settings.query_timeout_s,
-                  max_rows=PREVIEW_ROWS, prepared=compiled)
+        ctx = dataclasses.replace(svc.context(rec, SYSTEM), prepared=compiled)
+        res = run(ctx, sql, max_rows=PREVIEW_ROWS)
     except (QueryError, UnsafeSQLError) as exc:
         return {"error": f"The database rejected this step: {exc}", "errorStep": (upto or len(recipe.steps)) - 1,
                 "labels": labels, "columns": [], "rows": [], "sql": sql}
@@ -95,7 +107,12 @@ def preview(source_id: str, req: PreviewIn, state: StateDep, db: SessionDep) -> 
     return _preview(state, rec, Recipe(name=req.editing or req.name, base=req.base, steps=req.steps), req.upto, req.editing)
 
 
-@router.put("/{name}")
+# Changing prepared tables needs a plan with data preparation; looking at existing ones doesn't
+# (after a downgrade they keep working, read-only).
+_PREPARE = [Depends(require_feature("prepared_tables"))]
+
+
+@router.put("/{name}", dependencies=_PREPARE)
 def save(source_id: str, name: str, req: SaveIn, state: StateDep, db: SessionDep) -> dict:
     rec = _source(db, source_id)
     try:
@@ -106,7 +123,7 @@ def save(source_id: str, name: str, req: SaveIn, state: StateDep, db: SessionDep
     return _summary(state, db, rec, entry)
 
 
-@router.delete("/{name}", status_code=204)
+@router.delete("/{name}", status_code=204, dependencies=_PREPARE)
 def delete(source_id: str, name: str, state: StateDep, db: SessionDep):
     rec = _source(db, source_id)
     try:
@@ -128,8 +145,8 @@ def distinct(source_id: str, req: DistinctIn, state: StateDep, db: SessionDep) -
     return {"values": [str(v) for v in values[:50]], "more": len(values) > 50}
 
 
-@router.post("/suggest")
-def suggest(source_id: str, req: SuggestIn, state: StateDep, db: SessionDep, llm: LLMDep) -> dict:
+@router.post("/suggest", dependencies=_PREPARE)
+def suggest(source_id: str, req: SuggestIn, state: StateDep, db: SessionDep, llm: BackgroundLLMDep, who: WhoDep) -> dict:
     """Turn a plain-English request into one validated step, with a preview of the result."""
     rec = _source(db, source_id)
     recipe = Recipe(name=req.editing or req.name, base=req.base, steps=req.steps)
@@ -157,11 +174,13 @@ def suggest(source_id: str, req: SuggestIn, state: StateDep, db: SessionDep, llm
         {"role": "user", "content": req.request},
     ]
     last_error = ""
+    charge = state.quotas.charge(who.workspace_id, "assistant")
     for _ in range(2):
         try:
             draft = llm.structured(messages, StepDraft)
         except LLMError as exc:
-            raise HTTPException(503, f"The AI model is not available: {exc}") from exc
+            state.quotas.refund(charge)  # the AI couldn't answer: it doesn't count
+            raise ai_error(exc) from exc
         if draft.op == "unclear":
             return {"question": (draft.question or "Could you describe the change in a bit more detail?").strip()}
         try:

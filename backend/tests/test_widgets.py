@@ -65,6 +65,29 @@ def test_date_filter_prefers_measured_table_over_model_pick():
     assert validate_date_column(draft(), tables, count_sql, "sqlite") == ("customers", "signup_date")
 
 
+def test_counting_rows_measures_the_many_side_of_the_join():
+    """COUNT(*) over customers JOIN orders counts orders, whichever table the query names first."""
+    from stardeck.context import Relationship
+    from stardeck.widgets import pick_date_column
+    customers = TableInfo(name="customers", columns=[ColumnInfo(name="id", type="INT"), ColumnInfo(name="city", type="TEXT"),
+                                                     ColumnInfo(name="signup_date", type="DATE")])
+    orders = TableInfo(name="orders", columns=[ColumnInfo(name="id", type="INT"), ColumnInfo(name="customer_id", type="INT"),
+                                               ColumnInfo(name="order_date", type="DATE")],
+                       foreign_keys=["customer_id -> customers.id"])
+    sql = ("SELECT c.city, COUNT(*) AS completed_orders FROM customers c JOIN orders o ON o.customer_id = c.id "
+           "WHERE o.sts = 1 GROUP BY c.city")
+    assert pick_date_column([customers, orders], sql, "sqlite", "customers.signup_date") == ("orders", "order_date")
+    # CSV uploads declare no foreign keys: the source's inferred relationships say the same.
+    bare = orders.model_copy(update={"foreign_keys": []})
+    inferred = [Relationship("orders", "customer_id", "customers", "id", "inferred")]
+    assert pick_date_column([customers, bare], sql, "sqlite", "customers.signup_date",
+                            relationships=inferred) == ("orders", "order_date")
+    # Counting customers is still counting customers.
+    distinct = ("SELECT c.city, COUNT(DISTINCT c.id) AS n FROM customers c JOIN orders o ON o.customer_id = c.id "
+                "GROUP BY c.city")
+    assert pick_date_column([customers, orders], distinct, "sqlite") == ("customers", "signup_date")
+
+
 def test_second_category_becomes_series():
     res = QueryResult(["region", "product", "units"], [["N", "A", 1], ["S", "B", 2]])
     spec, _ = finalize_spec(draft(chart_type="bar", stack="stacked"), res)

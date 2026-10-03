@@ -1,0 +1,100 @@
+# Stardeck Cloud: one Caddy in front of everything, with automatic HTTPS.
+#   SITE_DOMAIN   the landing page, its legal pages, and the waitlist form's endpoint
+#   APP_DOMAIN    the app and its API
+#   SHARE_DOMAIN  public share links. Only the public API is reachable from here, and sign-in cookies
+#                 (set on the app's host) are never sent along with a share link.
+# The rest have the server's values as defaults; run-local.sh changes them to run it on this computer:
+#   SCHEME (https), BACKEND (backend:8000), SITE_ROOT (/srv/site), APP_ROOT (/srv/app)
+{
+	email {$ACME_EMAIL}
+}
+
+(security) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+}
+
+(backend) {
+	reverse_proxy {$BACKEND:backend:8000} {
+		# Dashboards and AI builds stream their results: pass them on as they come.
+		flush_interval -1
+		transport http {
+			read_timeout 10m
+		}
+	}
+}
+
+(app_files) {
+	root * {$APP_ROOT:/srv/app}
+	@hashed path /assets/*
+	header @hashed Cache-Control "public, max-age=31536000, immutable"
+	file_server
+}
+
+{$SCHEME:https}://{$SITE_DOMAIN} {
+	import security
+	encode zstd gzip
+	handle /api/public/waitlist {
+		import backend
+	}
+	# The demo and the app live on their own hosts.
+	redir /demo {$SCHEME:https}://{$SHARE_DOMAIN}/demo
+	redir /app {$SCHEME:https}://{$APP_DOMAIN}/
+	handle {
+		root * {$SITE_ROOT:/srv/site}
+		# Fills in the contact details ({{env "CONTACT_EMAIL"}} etc.) in the pages.
+		templates
+		try_files {path} {path}.html {path}/index.html
+		file_server
+	}
+}
+
+{$SCHEME:https}://www.{$SITE_DOMAIN} {
+	redir {$SCHEME:https}://{$SITE_DOMAIN}{uri} permanent
+}
+
+{$SCHEME:https}://{$APP_DOMAIN} {
+	import security
+	header X-Frame-Options DENY
+	encode zstd gzip
+	request_body {
+		max_size 110MB
+	}
+	handle /api/* {
+		import backend
+	}
+	handle {
+		try_files {path} /index.html
+		import app_files
+	}
+}
+
+{$SCHEME:https}://{$SHARE_DOMAIN} {
+	import security
+	encode zstd gzip
+	handle /api/public/* {
+		import backend
+	}
+	handle /api/* {
+		respond 404
+	}
+	@pages path /s/* /demo
+	handle @pages {
+		rewrite * /index.html
+		import app_files
+	}
+	@files file {
+		root {$APP_ROOT:/srv/app}
+	}
+	handle @files {
+		import app_files
+	}
+	handle {
+		redir {$SCHEME:https}://{$SITE_DOMAIN}
+	}
+}

@@ -29,8 +29,19 @@ Your data and your AI never leave your network.
   plain-English summary, and the exact SQL is one click away, editable, with a live preview.
 - **Read-only by design.** Only single `SELECT` statements are allowed, and every connection is
   also opened read-only at the database level, with a query timeout.
-- **Date filters that can't be hallucinated.** The dashboard's date range is applied by editing
-  the SQL syntax tree, never by the model. KPIs compare against the previous period.
+- **Filters and cross-filtering, like Power BI.** Add a filter for any column, or click a bar or slice
+  to filter the whole dashboard by it. Filters follow the links between tables (customers → orders →
+  order items), and a chart a filter can't reach says so.
+- **Dates that can't be hallucinated.** Financial year (April–March by default), quarters, recent
+  periods or a custom range, applied by editing the SQL syntax tree, never by the model. KPIs compare
+  against the previous period.
+- **Measures.** Define "Revenue" or "Refund rate" once; every chart, the assistant and the analyst use
+  the same formula, so the numbers always agree.
+- **People, roles and row-level security.** Viewers, editors and admins with their own sign-in. Limit
+  a viewer to their rows (e.g. their branch or city); the rule is enforced in the SQL of every query
+  they run.
+- **Several data sources on one dashboard.** Put your sales database and a targets spreadsheet side by
+  side; each chart uses the right one.
 - **Transform data like Power Query.** Build *prepared tables* step by step: filter, rename, change
   types, replace codes with labels, fill blanks, calculated and conditional columns, split columns,
   date parts, merge and append tables, group and summarize, pivot and unpivot. A live preview shows each step, column headers have quick
@@ -41,9 +52,13 @@ Your data and your AI never leave your network.
   (pivot with totals), radar, Sankey, histogram, box plot, gauge, number cards, tables, and maps on
   OpenStreetMap. The chart menu only offers types that fit the widget's data, and the AI picks
   sensible ones on its own (and fixes ones that don't fit).
-- **Share and export.** Read-only view links, PDF export, CSV download per widget.
-- **Postgres, MySQL, SQLite, CSV and Excel.** Optional password protection. Light and dark themes.
-  Works on phones.
+- **Share and export.** Public read-only links (no sign-in, no SQL, can expire), PDF export that keeps every
+  chart on one page, CSV download per widget.
+- **Postgres, MySQL, SQLite, CSV and Excel.** Charts load one by one as their queries finish, and each
+  source runs a limited number of queries at once. Light and dark themes. Works on phones.
+- **Run it for others.** Hosted mode gives every organisation its own private workspace, with
+  invitation links, sign-in by email and an operator CLI. See [docs/hosting.md](docs/hosting.md), and
+  [deploy/README.md](deploy/README.md) to run it on a server with the landing site in `site/`.
 
 ![Some of the chart types](docs/images/chart-gallery.png)
 
@@ -115,7 +130,10 @@ More: [architecture](docs/architecture.md) · [configuration](docs/configuration
 
 - Connect with a **read-only database account**. Stardeck enforces read-only itself, but a
   read-only account is the strongest guarantee.
-- If Stardeck is reachable by others (LAN, VPN), set `STARDECK_PASSWORD`.
+- If Stardeck is reachable by others (LAN, VPN), turn on sign-in (Settings → Turn on sign-in), or
+  set `STARDECK_PASSWORD` for one shared password. Until then, anyone who can open Stardeck is an admin.
+- Row rules apply to **viewers**. Editors and admins see every row (as in Power BI), so give anyone who
+  must only see some rows the viewer role.
 - Saved database passwords are encrypted with a key in `data/secret.key` (or `STARDECK_SECRET_KEY`).
   Back it up together with the data volume.
 - Columns marked **Hide from AI** are never sent to the model.

@@ -4,6 +4,7 @@ import {
   Check, ChevronRight, CircleAlert, Download, EyeOff, Lightbulb, LoaderCircle, Pencil, Plus, Search, Sparkles, Trash2, Upload, X,
 } from 'lucide-react'
 import { api, type ColumnDefinition, type ColumnInfo, type DataSource, type GlossaryTerm } from '../api'
+import { MeasuresPanel, RelationshipsPanel } from '../components/ModelPanels'
 
 const SOURCE_LABEL = { user: 'You', chat: 'From chat', ai_suggested: 'AI guess' } as const
 
@@ -137,6 +138,9 @@ export function DefinitionsPage() {
         {/* Keyed by saved content so the editor resets whenever the server copy changes. */}
         <GlossaryEditor key={JSON.stringify(source.glossary)} terms={source.glossary} onSave={(g) => run(() => api.saveGlossary(id, g), 'Business terms saved.')} />
       </section>
+
+      <MeasuresPanel source={source} onChange={apply} />
+      <RelationshipsPanel source={source} onChange={apply} />
 
       <div className="defs-toolbar">
         <label className="search-box">

@@ -1,0 +1,56 @@
+# Stardeck Cloud on one small VPS: Caddy (HTTPS, the site, the app, share links) and the backend.
+# The AI runs elsewhere (your GPU, over Tailscale): STARDECK_LLM_BASE_URL in deploy/.env.
+#
+#   cp deploy/.env.example deploy/.env     # then fill it in (never commit it)
+#   docker compose -f deploy/docker-compose.hosted.yml up -d --build
+#
+# See deploy/README.md for the whole runbook.
+name: stardeck
+
+services:
+  backend:
+    build: ../backend
+    env_file: .env
+    environment:
+      STARDECK_HOSTED: "true"
+      STARDECK_DATA_DIR: /data
+    # No access log: visitors' addresses aren't written to disk (see site/privacy.html).
+    command: ["uv", "run", "--frozen", "--no-dev", "uvicorn", "stardeck.main:app", "--host", "0.0.0.0", "--port", "8000",
+              "--proxy-headers", "--no-access-log"]
+    volumes:
+      - stardeck-data:/data
+    # Never published: only Caddy talks to it. One process (sign-in limits, the AI queue and
+    # allowances live in memory), so no --workers.
+    restart: unless-stopped
+    logging: &logs
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  caddy:
+    build:
+      context: ..
+      dockerfile: deploy/Caddy.Dockerfile
+    # Only what Caddy needs (not the backend's secrets), from deploy/.env.
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN:?set SITE_DOMAIN in deploy/.env}
+      APP_DOMAIN: ${APP_DOMAIN:?set APP_DOMAIN in deploy/.env}
+      SHARE_DOMAIN: ${SHARE_DOMAIN:?set SHARE_DOMAIN in deploy/.env}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in deploy/.env}
+      CONTACT_EMAIL: ${CONTACT_EMAIL:?set CONTACT_EMAIL in deploy/.env}
+      OPERATOR_NAME: ${OPERATOR_NAME:?set OPERATOR_NAME in deploy/.env}
+      OPERATOR_CITY: ${OPERATOR_CITY:?set OPERATOR_CITY in deploy/.env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [backend]
+    restart: unless-stopped
+    logging: *logs
+
+volumes:
+  stardeck-data:
+  caddy-data:
+  caddy-config:

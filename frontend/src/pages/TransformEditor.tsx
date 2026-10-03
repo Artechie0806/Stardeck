@@ -1,18 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import {
-  ArrowDown, ArrowUp, ChevronDown, Code, Database, LoaderCircle, Pencil, Plus, Save, Sparkles, Trash2, Undo2, X,
+  ArrowDown, ArrowUp, ChevronDown, Code, Database, LoaderCircle, Pencil, Plus, Save, Sparkles, Trash2, Undo2, Wand2, X,
 } from 'lucide-react'
 import { api, type DataSource, type StepSuggestion, type TransformPreview, type TransformStep } from '../api'
 import { StepForm } from '../components/StepForm'
 import { Popover } from '../components/Popover'
+import { UpgradeNote, UpgradePanel } from '../components/Upgrade'
 import { formatCategory } from '../lib/format'
+import { usePlan } from '../lib/plan'
 import { STEP_DEFS, STEP_GROUPS } from '../lib/steps'
 
 type FormState = { index: number; step: TransformStep; replace: boolean } | null
 
 /** Power Query-style editor: applied steps on the left, live preview, add/edit steps, AI suggestions. */
 export function TransformEditor() {
+  const locked = !usePlan().has('prepared_tables')
   const { id = '', name: routeName = 'new' } = useParams()
   const [params] = useSearchParams()
   const navigate = useNavigate()
@@ -130,6 +133,15 @@ export function TransformEditor() {
     }
   }
 
+  if (locked && isNew) {
+    return (
+      <div className="page narrow">
+        <UpgradePanel icon={<Wand2 size={26} aria-hidden />} title="Prepare your data">
+          Data preparation (prepared tables) is part of Stardeck Enterprise.
+        </UpgradePanel>
+      </div>
+    )
+  }
   if (!source) return <div className="page"><p className="muted">{notice?.text ?? 'Loading…'}</p></div>
 
   const labels = preview?.labels ?? []
@@ -138,6 +150,7 @@ export function TransformEditor() {
   return (
     <div className="page transform-page">
       <p className="crumb"><Link to="/sources">Data sources</Link> / <Link to={`/sources/${id}/transforms`}>{source.name}: prepared tables</Link></p>
+      {locked && <UpgradeNote>Changing prepared tables is part of Stardeck Enterprise. This one keeps working in your charts.</UpgradeNote>}
       <div className="page-head">
         <div className="title-block">
           <h1><input className="title-input" value={name} placeholder="table_name" aria-label="Prepared table name"
@@ -146,7 +159,7 @@ export function TransformEditor() {
         </div>
         <div className="head-actions">
           <button className={`btn ghost ${showSql ? 'active' : ''}`} onClick={() => setShowSql((s) => !s)}><Code size={15} aria-hidden /> SQL</button>
-          <button className="btn primary" disabled={!dirty || !name || !base || saving || !!preview?.error} onClick={save}>
+          <button className="btn primary" disabled={locked || !dirty || !name || !base || saving || !!preview?.error} onClick={save}>
             {saving ? <LoaderCircle size={15} className="spin" aria-hidden /> : <Save size={15} aria-hidden />} {dirty ? 'Save' : 'Saved'}
           </button>
         </div>

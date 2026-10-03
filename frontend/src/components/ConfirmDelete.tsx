@@ -17,7 +17,7 @@ export function ConfirmDelete({ label, detail, title, confirmText = 'Delete', on
   const ref = useRef<HTMLButtonElement>(null)
   return (
     <>
-      <button ref={ref} className={`icon-btn ${open ? 'active danger-active' : ''}`} title={title} aria-label={title}
+      <button ref={ref} type="button" className={`icon-btn ${open ? 'active danger-active' : ''}`} title={title} aria-label={title}
         aria-haspopup="dialog" aria-expanded={open} onClick={(e) => { e.preventDefault(); setOpen((o) => !o) }}>
         <Trash2 size={15} />
       </button>
@@ -31,8 +31,8 @@ export function ConfirmDelete({ label, detail, title, confirmText = 'Delete', on
             </div>
           </div>
           <div className="confirm-actions">
-            <button className="btn ghost small" autoFocus onClick={() => setOpen(false)}>Cancel</button>
-            <button className="btn danger small" onClick={() => { setOpen(false); onConfirm() }}>
+            <button type="button" className="btn ghost small" autoFocus onClick={() => setOpen(false)}>Cancel</button>
+            <button type="button" className="btn danger small" onClick={() => { setOpen(false); onConfirm() }}>
               <Trash2 size={13} aria-hidden /> {confirmText}
             </button>
           </div>

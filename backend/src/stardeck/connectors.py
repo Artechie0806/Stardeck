@@ -12,6 +12,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import URL, Engine
 
+from stardeck.netguard import BlockedAddress, Guard
+
 
 class PostgresConfig(BaseModel):
     kind: Literal["postgres"] = "postgres"
@@ -92,16 +94,26 @@ def build_url(config: SourceConfig) -> URL | str:
             return f"sqlite:///file:{path}?mode=ro&uri=true"
 
 
-def build_engine(config: SourceConfig, timeout_s: int = 30) -> Engine:
+# Small pools: a workspace's queries are already limited per source, and idle engines are dropped.
+_POOL = {"pool_size": 2, "max_overflow": 2, "pool_recycle": 300, "pool_pre_ping": True}
+
+
+def build_engine(config: SourceConfig, timeout_s: int = 30, guard: Guard | None = None) -> Engine:
+    """`guard` (hosted): network databases must be on the public internet, checked on every connect."""
     url = build_url(config)
+    if guard is not None and isinstance(config, PostgresConfig | MySQLConfig):
+        try:
+            guard.check_fields(config.host, config.database, config.username)
+        except BlockedAddress as exc:
+            raise SourceConnectionError(str(exc)) from exc
     match config:
         case PostgresConfig():
-            engine = create_engine(url, pool_pre_ping=True, connect_args={
+            engine = create_engine(url, **_POOL, connect_args={
                 "connect_timeout": 10,
                 "options": f"-c default_transaction_read_only=on -c statement_timeout={timeout_s * 1000}",
             })
         case MySQLConfig():
-            engine = create_engine(url, pool_pre_ping=True, connect_args={"connect_timeout": 10})
+            engine = create_engine(url, **_POOL, connect_args={"connect_timeout": 10, "local_infile": False})
 
             @event.listens_for(engine, "connect")
             def _readonly(dbapi_conn, _record):
@@ -112,19 +124,33 @@ def build_engine(config: SourceConfig, timeout_s: int = 30) -> Engine:
             if not Path(config.path).expanduser().is_file():
                 raise SourceConnectionError(f"File not found: {config.path}")
             engine = create_engine(url, connect_args={"timeout": timeout_s})
+    if guard is not None and isinstance(config, PostgresConfig | MySQLConfig):
+        host, port, postgres = config.host, config.port, isinstance(config, PostgresConfig)
+
+        @event.listens_for(engine, "do_connect")
+        def _pin(_dialect, _record, _cargs, cparams):
+            ip = guard.resolve(host, port)  # again on every new connection (pools reconnect)
+            if postgres:
+                cparams["hostaddr"] = ip  # libpq connects here and keeps `host` for TLS
+            else:
+                cparams["host"] = ip
     return engine
 
 
-def check_connection(config: SourceConfig, timeout_s: int = 30) -> Engine:
+def check_connection(config: SourceConfig, timeout_s: int = 30, guard: Guard | None = None) -> Engine:
     """Open an engine and prove it works, translating driver errors into readable messages."""
     try:
-        engine = build_engine(config, timeout_s)
+        engine = build_engine(config, timeout_s, guard)
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         return engine
     except SourceConnectionError:
         raise
+    except BlockedAddress as exc:
+        raise SourceConnectionError(str(exc)) from exc
     except Exception as exc:  # driver errors vary widely; show the first line only
+        if isinstance(exc.__cause__, BlockedAddress) or isinstance(getattr(exc, "orig", None), BlockedAddress):
+            raise SourceConnectionError(str(exc.__cause__ or exc.orig)) from exc
         root = exc.__cause__ or exc
         message = str(getattr(root, "orig", None) or root).strip().splitlines()[0]
         raise SourceConnectionError(f"Could not connect: {message}") from exc

@@ -1,22 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Link, useParams } from 'react-router'
-import { Check, Ellipsis, Eye, Link2, Move, Printer, RefreshCw, Sparkles, Undo2 } from 'lucide-react'
-import { api, type ChartType, type Dashboard, type DatePreset, type GridPos, type Stack, type Widget } from '../api'
+import { Check, Database, Ellipsis, Eye, Link2, Move, Printer, RefreshCw, Sparkles, Undo2 } from 'lucide-react'
+import { api, ApiError, type Cell, type ChartType, type DataSource, type FilterDef, type GridPos, type Stack, type Widget } from '../api'
 import { ChatPanel } from '../components/ChatPanel'
 import { ErrorBoundary } from '../components/ErrorBoundary'
 import { DashboardGrid } from '../components/DashboardGrid'
 import { FilterBar } from '../components/FilterBar'
 import { Popover } from '../components/Popover'
+import { ShareDialog } from '../components/ShareDialog'
+import { UpgradeNote } from '../components/Upgrade'
+import { useCan } from '../lib/authContext'
 import { copyText } from '../lib/browser'
+import { DateOptionsContext } from '../lib/dateContext'
+import { usePlan } from '../lib/plan'
+import { useDashboardRunner } from '../lib/useDashboardRunner'
 
 export function DashboardPage() {
   const { id = '' } = useParams()
-  const [dashboard, setDashboard] = useState<Dashboard | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const canEdit = useCan('editor')
+  const oneSource = !usePlan().has('multi_source')
+  const d = useDashboardRunner(id)
+  const [sources, setSources] = useState<DataSource[]>([])
   const [notice, setNotice] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [sharing, setSharing] = useState(false) // editors: public links and the workspace link
   const [editing, setEditing] = useState(false)
   // The assistant slides over the dashboard; it starts closed so the dashboard gets the whole screen.
   const [chatOpen, setChatOpen] = useState(false)
@@ -30,41 +38,33 @@ export function DashboardPage() {
   const [flash, setFlash] = useState<{ id: string; n: number } | null>(null)
   const [moreOpen, setMoreOpen] = useState(false)
   const moreRef = useRef<HTMLButtonElement>(null)
+  const [dataOpen, setDataOpen] = useState(false)
+  const dataRef = useRef<HTMLButtonElement>(null)
   // Removing a widget waits a few seconds so it can be undone.
   const [removing, setRemoving] = useState<{ id: string; title: string } | null>(null)
   const removeTimer = useRef<number | undefined>(undefined)
   const removingRef = useRef<string | null>(null)
-  const request = useRef(0)
-  // The date range being viewed. Changing it doesn't touch the saved default until "Make default".
-  const viewPreset = useRef<DatePreset | null>(null)
-  const [savedPreset, setSavedPreset] = useState<DatePreset | null>(null)
+  const reload = d.reload
+
+  useEffect(() => { api.listSources().then(setSources).catch(() => {}) }, [])
+
+  // Ctrl/Cmd+P opens the print-ready view, like the PDF button: the editing grid can't be paginated.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'p') {
+        e.preventDefault()
+        window.open(`/view/${encodeURIComponent(id)}?print=1`, '_blank', 'noopener')
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [id])
 
   // Leaving the page commits a pending removal instead of silently dropping it.
   useEffect(() => () => {
     window.clearTimeout(removeTimer.current)
     if (removingRef.current) void api.removeWidget(id, removingRef.current).catch(() => {})
   }, [id])
-
-  /** Re-runs every widget. The previous render stays (dimmed) until fresh data lands. */
-  const load = useCallback(async (fresh = false) => {
-    const n = ++request.current
-    setLoading(true)
-    try {
-      const def = await api.getDashboardDef(id)
-      const preset = viewPreset.current ?? (def.datePreset as DatePreset)
-      const results = await api.runDashboard(id, preset, fresh)
-      if (n === request.current) {
-        setSavedPreset(def.datePreset as DatePreset)
-        setDashboard({ ...def, datePreset: preset, widgets: def.widgets.map((w) => ({ ...w, ...results[w.id] })) })
-      }
-    } catch (e) {
-      if (n === request.current) setError((e as Error).message)
-    } finally {
-      if (n === request.current) setLoading(false)
-    }
-  }, [id])
-
-  useEffect(() => { void load() }, [load])
 
   const openChat = () => {
     const active = document.activeElement
@@ -98,9 +98,10 @@ export function DashboardPage() {
     return () => { cancelAnimationFrame(frame); window.clearTimeout(done) }
   }, [flash])
 
-  if (error) {
+  const dashboard = d.def
+  if (d.error && !dashboard) {
     return (
-      <div className="page"><section className="empty"><h2>This dashboard couldn’t be opened</h2><p>{error}</p>
+      <div className="page"><section className="empty"><h2>This dashboard couldn’t be opened</h2><p>{d.error}</p>
         <Link to="/" className="btn primary">Back to dashboards</Link></section></div>
     )
   }
@@ -114,21 +115,18 @@ export function DashboardPage() {
     )
   }
 
-  const preset = dashboard.datePreset
+  const preset = d.view.preset
+  const mine = sources.filter((s) => dashboard.sourceIds.includes(s.id))
+  const sourceNames = dashboard.sourceIds.length > 1 ? Object.fromEntries(mine.map((s) => [s.id, s.name])) : undefined
   // Wrap mutations so a failure shows a message instead of an unhandled rejection.
   const act = async (fn: () => Promise<unknown>) => {
     try {
       await fn()
-      await load()
+      await reload()
     } catch (e) {
       setNotice((e as Error).message)
     }
   }
-  const setPreset = (p: DatePreset) => { viewPreset.current = p; void load() }
-  const makeDefault = () => act(async () => {
-    await api.updateDashboard(id, { datePreset: preset })
-    viewPreset.current = null
-  })
   const onLayoutChange = (layout: Record<string, GridPos>) => {
     if (editing) api.saveLayout(id, layout).catch((e: Error) => setNotice(e.message))
   }
@@ -150,13 +148,26 @@ export function DashboardPage() {
     setRemoving(null)
   }
   const onAsk = (text: string) => { setDraft({ text, n: Date.now() }); openChat() }
-  const visible = dashboard.widgets.filter((w) => w.id !== removing?.id)
+  const visible = d.widgets.filter((w) => w.id !== removing?.id)
   const onChangeType = (widgetId: string, type: ChartType, stack: Stack) =>
     act(() => api.updateWidget(id, widgetId, { chartType: type, stack }))
-  const onRunSql = (w: Widget, sql: string) => api.previewWidget(dashboard.sourceId, { ...w, sql }, preset)
+  const onRunSql = (w: Widget, sql: string) => api.previewWidget(w.sourceId ?? dashboard.sourceId, { ...w, sql }, d.ranges)
   const onSaveSql = async (widgetId: string, sql: string) => {
     await api.updateWidget(id, widgetId, { sql }) // the server refuses SQL that fails
-    await load()
+    await reload()
+  }
+  const onPick = async (widgetId: string, column: string, value: Cell) => {
+    try {
+      d.toggleCross(await api.crossFilter(id, widgetId, column, value))
+    } catch (e) {
+      if (!(e instanceof ApiError && e.status === 422)) setNotice((e as Error).message)
+    }
+  }
+  const saveFilters = (filters: FilterDef[]) => act(() => api.updateDashboard(id, { filters }))
+  const toggleSource = (sourceId: string) => {
+    const has = dashboard.sourceIds.includes(sourceId)
+    const next = has ? dashboard.sourceIds.filter((s) => s !== sourceId) : [...dashboard.sourceIds, sourceId]
+    if (next.length) void act(() => api.updateDashboard(id, { sourceIds: next }))
   }
   const viewUrl = `${window.location.origin}/view/${id}`
   const copyLink = async () => {
@@ -172,24 +183,63 @@ export function DashboardPage() {
   }
 
   return (
+    <DateOptionsContext.Provider value={d.dateOpts}>
     <div className="dashboard-layout">
       <div className="page dashboard-page">
         <div className="page-head">
           <div className="title-block">
             <h1>
-              <input className="title-input" defaultValue={dashboard.name} key={dashboard.name} aria-label="Dashboard name"
-                onBlur={(e) => rename(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()} />
+              {canEdit ? (
+                <input className="title-input" defaultValue={dashboard.name} key={dashboard.name} aria-label="Dashboard name"
+                  onBlur={(e) => rename(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()} />
+              ) : dashboard.name}
             </h1>
             <p className="muted">{dashboard.description}</p>
+            {mine.length > 1 && (
+              <p className="source-chips">{mine.map((s) => <span key={s.id} className="badge"><Database size={11} aria-hidden /> {s.name}</span>)}</p>
+            )}
           </div>
           <div className="head-actions">
-            <button className="btn ghost wide-only" onClick={() => void load(true)} title="Re-run every query, skipping the cache">
-              <RefreshCw size={15} aria-hidden className={loading ? 'spin' : ''} /> Refresh
+            <button className="btn ghost wide-only" onClick={d.refresh} title="Re-run every query, skipping the cache">
+              <RefreshCw size={15} aria-hidden className={d.loading ? 'spin' : ''} /> Refresh
             </button>
-            <button className="btn ghost wide-only" onClick={copyLink}
-              title="Copy a link to the read-only view. Anyone who can reach this Stardeck (and sign in, if a password is set) can open it.">
-              {copied ? <Check size={15} aria-hidden /> : <Link2 size={15} aria-hidden />} {copied ? 'Link copied' : 'Share'}
-            </button>
+            {canEdit && (
+              <button ref={dataRef} className="btn ghost wide-only" aria-haspopup="dialog" aria-expanded={dataOpen}
+                onClick={() => setDataOpen((o) => !o)} title="Choose which data sources this dashboard uses">
+                <Database size={15} aria-hidden /> Data
+              </button>
+            )}
+            {dataOpen && (
+              <Popover anchor={dataRef} onClose={() => setDataOpen(false)} className="slicer-menu" role="dialog" label="Data sources">
+                <div className="menu-label">Data on this dashboard</div>
+                <div className="slicer-values">
+                  {sources.map((s) => {
+                    const on = dashboard.sourceIds.includes(s.id)
+                    return (
+                      <label key={s.id} className={`slicer-option${on ? ' on' : ''}`}>
+                        <input type="checkbox" checked={on}
+                          disabled={on ? dashboard.sourceIds.length === 1 : oneSource && dashboard.sourceIds.length >= 1}
+                          onChange={() => toggleSource(s.id)} />
+                        <span>{s.name}</span>
+                      </label>
+                    )
+                  })}
+                </div>
+                {oneSource ? <UpgradeNote>Several data sources on one dashboard is part of Stardeck Enterprise.</UpgradeNote>
+                  : <p className="muted small slicer-note">Ask Stardeck for a chart and it picks the right source. A source still used by a chart can’t be removed.</p>}
+              </Popover>
+            )}
+            {canEdit ? (
+              <button className="btn ghost wide-only" onClick={() => setSharing(true)} aria-haspopup="dialog"
+                title="Share a read-only link, with people in your workspace or anyone">
+                <Link2 size={15} aria-hidden /> Share
+              </button>
+            ) : (
+              <button className="btn ghost wide-only" onClick={copyLink}
+                title="Copy a link to the read-only view. Anyone who can sign in to this Stardeck can open it.">
+                {copied ? <Check size={15} aria-hidden /> : <Link2 size={15} aria-hidden />} {copied ? 'Link copied' : 'Share'}
+              </button>
+            )}
             <a className="btn ghost wide-only" href={`/view/${id}`} target="_blank" rel="noreferrer" title="Open the read-only view">
               <Eye size={15} aria-hidden /> View
             </a>
@@ -197,17 +247,21 @@ export function DashboardPage() {
               title="Open the printable view; choose 'Save as PDF' in the print dialog">
               <Printer size={15} aria-hidden /> PDF
             </a>
-            <button className={`btn ${editing ? 'primary' : 'ghost'} wide-only`} onClick={() => setEditing((e) => !e)}>
-              {editing ? <><Check size={15} aria-hidden /> Done</> : <><Move size={15} aria-hidden /> Edit layout</>}
-            </button>
+            {canEdit && (
+              <button className={`btn ${editing ? 'primary' : 'ghost'} wide-only`} onClick={() => setEditing((e) => !e)}>
+                {editing ? <><Check size={15} aria-hidden /> Done</> : <><Move size={15} aria-hidden /> Edit layout</>}
+              </button>
+            )}
             <button ref={moreRef} className="btn ghost narrow-only" aria-label="More actions" aria-haspopup="menu"
               aria-expanded={moreOpen} onClick={() => setMoreOpen((o) => !o)}>
               <Ellipsis size={16} aria-hidden />
             </button>
             {moreOpen && (
               <Popover anchor={moreRef} onClose={() => setMoreOpen(false)} label="Dashboard actions">
-                <button className="menu-item" onClick={() => { setMoreOpen(false); void load(true) }}><RefreshCw size={15} /> Refresh data</button>
-                <button className="menu-item" onClick={() => { setMoreOpen(false); void copyLink() }}><Link2 size={15} /> Copy share link</button>
+                <button className="menu-item" onClick={() => { setMoreOpen(false); d.refresh() }}><RefreshCw size={15} /> Refresh data</button>
+                {canEdit
+                  ? <button className="menu-item" onClick={() => { setMoreOpen(false); setSharing(true) }}><Link2 size={15} /> Share…</button>
+                  : <button className="menu-item" onClick={() => { setMoreOpen(false); void copyLink() }}><Link2 size={15} /> Copy share link</button>}
                 <a className="menu-item" href={`/view/${id}`} target="_blank" rel="noreferrer" onClick={() => setMoreOpen(false)}><Eye size={15} /> Open read-only view</a>
                 <a className="menu-item" href={`/view/${id}?print=1`} target="_blank" rel="noreferrer" onClick={() => setMoreOpen(false)}><Printer size={15} /> Save as PDF</a>
               </Popover>
@@ -215,32 +269,32 @@ export function DashboardPage() {
           </div>
         </div>
 
-        <div className="filter-row">
-          <FilterBar value={preset} onChange={setPreset} />
-          {savedPreset && preset !== savedPreset && (
-            <button className="btn text small" onClick={() => void makeDefault()}
-              title="Everyone opening this dashboard (including the shared view) will start with this date range">
-              Make default
-            </button>
-          )}
-        </div>
-        {notice && <p className="error banner" role="alert">{notice}
-          <button className="icon-btn" onClick={() => setNotice(null)} title="Dismiss">×</button></p>}
+        <FilterBar preset={preset} custom={d.view.custom} fiscalStart={d.dateOpts.fiscalStart} onDate={d.setDate}
+          filters={dashboard.filters ?? []} selections={d.selections} onSelect={d.select}
+          crossFilters={d.cross} onClearCross={d.clearCross}
+          loadValues={(f, q) => api.filterValues(id, f.sourceId, f.table, f.column, q)}
+          canEdit={canEdit} sources={mine.length ? mine : undefined}
+          onAddFilter={(f) => void saveFilters([...(dashboard.filters ?? []), f])}
+          onRemoveFilter={(fid) => { d.select(fid, []); void saveFilters((dashboard.filters ?? []).filter((f) => f.id !== fid)) }}
+          dirty={canEdit && d.dirty} onMakeDefault={() => void d.makeDefault().catch((e: Error) => setNotice(e.message))}
+          onClearAll={d.clearAll} />
+        {(notice || d.error) && <p className="error banner" role="alert">{notice ?? d.error}
+          <button className="icon-btn" onClick={() => { setNotice(null); d.setError(null) }} title="Dismiss">×</button></p>}
         {editing && <p className="edit-hint">Drag widgets by their title bar and resize from the bottom-right corner.</p>}
         {visible.length === 0 && (
           <section className="empty">
             <span className="icon-tile large"><Sparkles size={26} aria-hidden /></span>
             <h2>This dashboard is empty</h2>
-            <p>Ask Stardeck for a chart, e.g. “revenue by month”.</p>
-            <button className="btn primary" onClick={openChat}><Sparkles size={15} aria-hidden /> Ask Stardeck</button>
+            <p>{canEdit ? 'Ask Stardeck for a chart, e.g. “revenue by month”.' : 'Nothing has been added to this dashboard yet.'}</p>
+            {canEdit && <button className="btn primary" onClick={openChat}><Sparkles size={15} aria-hidden /> Ask Stardeck</button>}
           </section>
         )}
 
-        <div className={loading ? 'refetching' : undefined}>
-          <DashboardGrid widgets={visible} preset={preset} editing={editing} highlightId={flash?.id}
-            onLayoutChange={onLayoutChange} onRemove={onRemove} onChangeType={onChangeType}
-            onRunSql={onRunSql} onSaveSql={onSaveSql} onAsk={onAsk} />
-        </div>
+        <DashboardGrid widgets={visible} preset={preset} editing={editing} readOnly={!canEdit} highlightId={flash?.id}
+          onLayoutChange={onLayoutChange} onRemove={onRemove} onChangeType={onChangeType}
+          onRunSql={onRunSql} onSaveSql={onSaveSql} onAsk={canEdit ? onAsk : undefined}
+          onPick={(wid, column, value) => void onPick(wid, column, value)} picked={d.picked} refreshing={d.pending}
+          filterLabels={d.filterLabels} sourceNames={sourceNames} defaultSourceId={dashboard.sourceId} />
       </div>
 
       {createPortal(
@@ -253,9 +307,10 @@ export function DashboardPage() {
       {chatMounted && (
         // Keyed by dashboard: a conversation (and its proposals) belongs to the dashboard it was about.
         <ErrorBoundary key={id} label="The assistant hit an error">
-          <ChatPanel dashboardId={id} sourceId={dashboard.sourceId} preset={preset} open={chatOpen} draft={draft}
+          <ChatPanel dashboardId={id} sourceId={dashboard.sourceId} preset={preset} ranges={d.ranges} filters={d.active}
+            canEdit={canEdit} open={chatOpen} draft={draft}
             widgets={visible.map((w) => ({ id: w.id, title: w.title, type: w.spec.type }))}
-            onApplied={async (widgetId) => { await load(); if (widgetId) setFlash({ id: widgetId, n: Date.now() }) }}
+            onApplied={async (widgetId) => { await reload(); if (widgetId) setFlash({ id: widgetId, n: Date.now() }) }}
             onShow={(widgetId) => {
               // Close the panel where it covers the dashboard, or when the widget sits behind it.
               const r = document.querySelector(`[data-widget-id="${CSS.escape(widgetId)}"]`)?.getBoundingClientRect()
@@ -273,6 +328,8 @@ export function DashboardPage() {
           <button className="btn text small" onClick={undoRemove}><Undo2 size={14} aria-hidden /> Undo</button>
         </div>
       )}
+      {sharing && <ShareDialog dashboardId={id} name={dashboard.name} onClose={() => setSharing(false)} />}
     </div>
+    </DateOptionsContext.Provider>
   )
 }

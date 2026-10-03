@@ -46,7 +46,7 @@ def test_define_column_validates_against_schema(client, scripted):
     scripted({"intent": "define_column", "table": "order", "column": "STS", "description": "Order status",
               "values": [{"code": "9", "meaning": "Refunded"}]})
     out = say(client, "sts 9 means refunded")
-    assert out["proposal"] == {"kind": "definition", "table": "orders", "column": "sts",
+    assert out["proposal"] == {"kind": "definition", "sourceId": "retail-demo", "table": "orders", "column": "sts",
                                "definition": {"description": "Order status", "values": {"9": "Refunded"}}}
 
 
@@ -160,12 +160,67 @@ def test_router_sends_questions_to_the_analyst(client, scripted, demo_db):
     assert out["agent"] == "analyst" and "Mumbai" in out["text"]
     assert scripted.routed == ["which city brought in the most revenue last year?"]
     a = out["analysis"]
-    assert a["queries"] == [{"sql": sql, "rows": 1}] and a["evidence"]["rows"][0][0] == "Mumbai"
+    assert a["queries"] == [{"sql": sql, "rows": 1, "sourceId": "retail-demo"}] and a["sourceId"] == "retail-demo"
+    assert a["evidence"]["rows"][0][0] == "Mumbai"
     assert a["chartRequest"] == "Revenue by city in 2025" and out["options"] == ["How did Delhi do?"]
     assert "proposal" not in out  # the analyst never changes the dashboard
     # Its prompt is the analyst's, with today's date and the dashboard period; not the builder's intents.
     assert "careful data analyst" in scripted.prompts[0] and "2025-01-01 to 2025-12-31" in scripted.prompts[0]
     assert "add_widget" not in scripted.prompts[0]
+
+
+REVENUE_BY_CITY = ("SELECT c.city, SUM(o.amt) / 100.0 AS revenue FROM orders o JOIN customers c ON c.id = o.customer_id "
+                   "WHERE o.sts = 1 GROUP BY c.city ORDER BY revenue DESC")
+
+
+def mumbai_revenue(demo_db, year: str | None = None) -> float:
+    dated = f"AND o.order_date LIKE '{year}%'" if year else ""
+    return demo_db.execute("SELECT SUM(o.amt) / 100.0 FROM orders o JOIN customers c ON c.id = o.customer_id "
+                           f"WHERE o.sts = 1 AND c.city = 'Mumbai' {dated}").fetchone()[0]
+
+
+def test_analyst_covers_the_dashboards_period_when_its_query_names_none(client, scripted, demo_db):
+    """It used to sum all dates while saying "in 2025": the dashboard's period now applies to queries
+    that don't set dates themselves, and the result tells the model which period it covers."""
+    scripted({"thought": "Revenue per city.", "action": "query", "sql": REVENUE_BY_CITY},
+             {"thought": "Done.", "action": "answer", "answer": "**Mumbai** brings in the most."}, agent="analyst")
+    a = say(client, "which city brings in the most revenue?")["analysis"]
+    assert a["evidence"]["rows"][0][0] == "Mumbai"
+    assert a["evidence"]["rows"][0][1] == pytest.approx(mumbai_revenue(demo_db, "2025"))
+    assert mumbai_revenue(demo_db) > mumbai_revenue(demo_db, "2025")  # all dates would have been more
+    # Shown in "how I worked it out"; the query itself stays as written, so "Add as chart" follows the dashboard.
+    assert a["queries"] == [{"sql": REVENUE_BY_CITY, "rows": 6, "sourceId": "retail-demo",
+                             "dates": {"table": "orders", "column": "order_date", "start": "2025-01-01", "end": "2025-12-31"}}]
+    assert "2025-01-01 to 2025-12-31" in scripted.asked[1]  # the result the model read says so
+
+
+def test_analyst_keeps_its_own_dates_and_can_ask_for_all_of_them(client, scripted, demo_db):
+    by_month = ("SELECT strftime('%Y-%m', o.order_date) AS month, SUM(o.amt) / 100.0 AS revenue FROM orders o "
+                "WHERE o.sts = 1 AND o.order_date LIKE '2024%' GROUP BY 1")
+    scripted({"thought": "2024 by month.", "action": "query", "sql": by_month},
+             {"thought": "Done.", "action": "answer", "answer": "Done."}, agent="analyst")
+    a = say(client, "revenue by month in 2024")["analysis"]
+    assert "dates" not in a["queries"][0] and all(r[0].startswith("2024") for r in a["evidence"]["rows"])
+    scripted({"thought": "All time.", "action": "query", "sql": REVENUE_BY_CITY, "all_dates": True},
+             {"thought": "Done.", "action": "answer", "answer": "Done."}, agent="analyst")
+    a = say(client, "which city brings in the most revenue of all time?")["analysis"]
+    assert "dates" not in a["queries"][0]
+    assert a["evidence"]["rows"][0][1] == pytest.approx(mumbai_revenue(demo_db))
+
+
+def test_chart_proposal_counting_orders_filters_by_the_order_date(client, scripted, demo_db):
+    """Counting customers JOIN orders rows counts orders: the date filter is the order date, not
+    the customers' signup date the model suggested."""
+    draft = {"reasoning": "r", "title": "Completed orders by city", "summary": "Completed orders in each city.",
+             "chart_type": "bar", "x": "city", "y": "orders", "date_column": "customers.signup_date",
+             "sql": "SELECT c.city, COUNT(*) AS orders FROM customers c JOIN orders o ON o.customer_id = c.id "
+                    "WHERE o.sts = 1 GROUP BY c.city ORDER BY orders DESC"}
+    scripted({"intent": "add_widget", "request": "completed orders by city"}, draft)
+    p = say(client, "add a chart of completed orders by city")["proposal"]
+    assert p["widget"]["dateFilter"] == {"table": "orders", "column": "order_date"}
+    mumbai = demo_db.execute("SELECT COUNT(*) FROM orders o JOIN customers c ON c.id = o.customer_id "
+                             "WHERE o.sts = 1 AND c.city = 'Mumbai' AND o.order_date LIKE '2025%'").fetchone()[0]
+    assert dict(p["widget"]["result"]["rows"])["Mumbai"] == mumbai
 
 
 def test_analyst_must_look_at_data_and_recovers_from_bad_sql(client, scripted):
@@ -210,6 +265,11 @@ def test_analyst_gets_lakh_crore_readings_and_leaked_follow_ups_are_moved(client
     assert "18584215 (= 1.86 crore)" in text and "934000.5 (= 9.34 lakh)" in text and "2026" in text
     answer, ups = _split_follow_ups('Mumbai led.\n\nfollow_ups: ["How did Delhi do?", "And last year?"]')
     assert answer == "Mumbai led." and ups == ["How did Delhi do?", "And last year?"]
+    # Apostrophes inside the questions aren't quotes (they used to cut "Mumbai's revenue?" to "s revenue?").
+    _, ups = _split_follow_ups('Mumbai led.\nfollow_ups: ["Which segment drives Mumbai\'s revenue?", "How has Mumbai\'s revenue changed?"]')
+    assert ups == ["Which segment drives Mumbai's revenue?", "How has Mumbai's revenue changed?"]
+    _, ups = _split_follow_ups("Mumbai led.\nfollow_ups: ['Which segment drives Mumbai's revenue?', 'And Delhi?']")
+    assert ups == ["Which segment drives Mumbai's revenue?", "And Delhi?"]
 
 
 def test_add_as_chart_builds_from_the_analysts_query(client, scripted):

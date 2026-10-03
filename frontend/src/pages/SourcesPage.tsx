@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { Link } from 'react-router'
 import {
   ArrowLeft, ArrowRight, BookOpen, ChevronRight, CircleAlert, CircleCheck, Database, Eye, EyeOff, FileSpreadsheet, HardDrive,
@@ -6,7 +6,11 @@ import {
 } from 'lucide-react'
 import { api, type DataSource, type SourceConfig, type SourceKind, type TestResult } from '../api'
 import { ConfirmDelete } from '../components/ConfirmDelete'
+import { PortalHost } from '../lib/portalHost'
+import { UpgradeNote } from '../components/Upgrade'
+import { useAppConfig } from '../lib/config'
 import { relativeTime } from '../lib/format'
+import { isFull, usePlan, useUsage } from '../lib/plan'
 
 const KINDS: { value: SourceKind; label: string }[] = [
   { value: 'postgres', label: 'PostgreSQL' },
@@ -21,8 +25,14 @@ export function SourcesPage() {
   const [adding, setAdding] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const { plan } = usePlan()
+  const { usage, reload: reloadUsage } = useUsage()
+  const full = isFull(usage?.sources)
 
-  const load = useCallback(() => api.listSources().then(setSources).catch((e: Error) => setError(e.message)), [])
+  const load = useCallback(() => {
+    reloadUsage()
+    return api.listSources().then(setSources).catch((e: Error) => setError(e.message))
+  }, [reloadUsage])
   useEffect(() => { void load() }, [load])
 
   const refresh = async (id: string) => {
@@ -57,8 +67,13 @@ export function SourcesPage() {
           <h1>Data sources</h1>
           <p className="muted">The databases and spreadsheets your dashboards are built from.</p>
         </div>
-        <button className="btn primary" onClick={() => setAdding(true)}><Plus size={16} aria-hidden /> Add data source</button>
+        <button className="btn primary" onClick={() => setAdding(true)} disabled={full}
+          title={full ? 'Your plan’s data sources are all in use' : undefined}><Plus size={16} aria-hidden /> Add data source</button>
       </div>
+      {full && usage?.sources.limit !== null && (
+        <UpgradeNote>Your {plan?.name ?? ''} plan includes {usage?.sources.limit} data source{usage?.sources.limit === 1 ? '' : 's'},
+          and the sample doesn’t count. Remove one to add another, or upgrade for more.</UpgradeNote>
+      )}
       {error && <p className="error" role="alert">{error}</p>}
 
       {adding && <AddSourceDialog onClose={() => setAdding(false)} onCreated={() => { setAdding(false); void load() }} />}
@@ -71,7 +86,7 @@ export function SourcesPage() {
           <span className="icon-tile large"><Database size={26} aria-hidden /></span>
           <h2>No data sources yet</h2>
           <p>Upload a spreadsheet or connect a database. Stardeck reads it, and the AI builds dashboards from it.</p>
-          <button className="btn primary" onClick={() => setAdding(true)}><Plus size={16} aria-hidden /> Add data source</button>
+          <button className="btn primary" onClick={() => setAdding(true)} disabled={full}><Plus size={16} aria-hidden /> Add data source</button>
         </section>
       )}
 
@@ -143,7 +158,8 @@ function parseUrl(text: string): Partial<typeof EMPTY_NET> & { kind?: SourceKind
 }
 
 function AddSourceDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
-  const ref = useRef<HTMLDialogElement>(null)
+  const appConfig = useAppConfig()
+  const [dialog, setDialog] = useState<HTMLDialogElement | null>(null)
   const [kind, setKind] = useState<SourceKind | null>(null)
   const [name, setName] = useState('')
   const [net, setNet] = useState(EMPTY_NET)
@@ -157,10 +173,9 @@ function AddSourceDialog({ onClose, onCreated }: { onClose: () => void; onCreate
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    const d = ref.current
-    if (d && !d.open) d.showModal()
-    return () => d?.close()
-  }, [])
+    if (dialog && !dialog.open) dialog.showModal()
+    return () => dialog?.close()
+  }, [dialog])
 
   const choose = (k: SourceKind | null) => {
     setKind(k); setTest(null); setError(null)
@@ -226,9 +241,10 @@ function AddSourceDialog({ onClose, onCreated }: { onClose: () => void; onCreate
   const Icon = kind ? KIND_INFO[kind].icon : Plus
 
   return (
-    <dialog ref={ref} className="modal" aria-labelledby="add-source-title"
+    <dialog ref={setDialog} className="modal" aria-labelledby="add-source-title"
       onCancel={(e) => { e.preventDefault(); if (!busy) onClose() }}
       onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose() }}>
+      <PortalHost.Provider value={dialog}>
       <form className="modal-body" onSubmit={submit}>
         <header className="modal-head">
           {kind && (
@@ -247,7 +263,7 @@ function AddSourceDialog({ onClose, onCreated }: { onClose: () => void; onCreate
         <div className="modal-content">
           {!kind && (
             <div className="kind-grid" role="list">
-              {KIND_ORDER.map((k) => {
+              {KIND_ORDER.filter((k) => !(appConfig?.hosted && k === 'sqlite')).map((k) => {
                 const KIcon = KIND_INFO[k].icon
                 return (
                   <button type="button" role="listitem" key={k} className="kind-tile" onClick={() => choose(k)}>
@@ -275,7 +291,8 @@ function AddSourceDialog({ onClose, onCreated }: { onClose: () => void; onCreate
                   <span key={f.name} className="file-pill"><FileSpreadsheet size={13} aria-hidden /> {f.name}</span>
                 ))}</span>
               ) : <strong>Drop files here, or click to choose</strong>}
-              <span className="muted small">.csv, .tsv or .xlsx. Each CSV, and each sheet in an Excel file, becomes a table.</span>
+              <span className="muted small">.csv, .tsv or .xlsx. Each CSV, and each sheet in an Excel file, becomes a table.
+                {appConfig?.plan?.limits.uploadMb ? ` Up to ${appConfig.plan.limits.uploadMb} MB.` : ''}</span>
               <input type="file" accept=".csv,.tsv,.xlsx" multiple className="visually-hidden"
                 onChange={(e) => setFiles([...(e.target.files ?? [])])} />
             </label>
@@ -366,6 +383,7 @@ function AddSourceDialog({ onClose, onCreated }: { onClose: () => void; onCreate
           </footer>
         )}
       </form>
+      </PortalHost.Provider>
     </dialog>
   )
 }

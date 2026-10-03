@@ -2,10 +2,8 @@ import json
 
 import httpx
 
-from stardeck.config import Settings
-from stardeck.deps import get_llm
 from stardeck.labels import trim
-from stardeck.llm import LLMClient
+from tests.conftest import fake_ai
 
 
 def test_trim():
@@ -26,14 +24,15 @@ def test_shorten_validates_and_caches(client):
         calls.append(1)
         return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(reply)}}]})
 
-    client.app.dependency_overrides[get_llm] = lambda: LLMClient(Settings(), transport=httpx.MockTransport(handler))
+    stub = fake_ai(client.app, handler)
+    stub.__enter__()
     try:
         labels = ["Pune", "Electronics & Home Appliances", "International Wholesale Customers",
                   "International Wholesale Partners"]
         out = client.post("/api/labels/shorten", json={"labels": labels, "maxChars": 14}).json()
         again = client.post("/api/labels/shorten", json={"labels": labels, "maxChars": 14}).json()
     finally:
-        client.app.dependency_overrides.clear()
+        stub.__exit__(None, None, None)
     m = out["labels"]
     assert m["Pune"] == "Pune" and m["International Wholesale Customers"] == "Intl Wholesale"
     assert all(len(v) <= 14 for v in m.values()) and len(set(m.values())) == 4  # all fit, all distinct

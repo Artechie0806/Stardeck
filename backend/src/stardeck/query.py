@@ -1,12 +1,19 @@
-"""Run read-only queries for widgets: safety checks, row caps, timeouts, date filters.
+"""Run read-only queries for widgets: safety checks, measures, row filters, row caps, timeouts.
 
-Dashboard filters are applied here, deterministically, by editing the SQL syntax tree;
-the LLM never writes filter clauses.
+Every data query goes through `run(ctx, sql)`. In order it:
+  1. checks the SQL is a single read-only SELECT,
+  2. expands MEASURE(name) into the measure's formula,
+  3. adds the prepared tables the query uses as CTEs,
+  4. applies row filters: the user's security rules (always) and the dashboard's filters,
+  5. caps the rows and runs it with a timeout.
+Dashboard date filters are applied by editing the SQL syntax tree too; the LLM never writes them.
 """
 
 import math
 import time
-from dataclasses import dataclass
+from collections.abc import Sequence
+from contextlib import nullcontext
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from datetime import time as dtime
 from decimal import Decimal
@@ -14,18 +21,17 @@ from typing import Any
 
 import sqlglot
 from sqlalchemy import text
-from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlglot import exp
 
-from stardeck.sqlgen import UnsafeSQLError, ensure_read_only
+from stardeck.context import Restriction, SourceContext
+from stardeck.measures import expand_measures, uses_measures
+from stardeck.rowfilter import apply_row_filters
+from stardeck.sqlgen import QueryError, UnsafeSQLError, ensure_read_only
+from stardeck.sqlutil import direct_tables
 from stardeck.transforms import TransformError, with_prepared
 
 MAX_ROWS = 1000
-
-
-class QueryError(RuntimeError):
-    """A query failed; the message is safe to show to users (and to feed back to the model)."""
 
 
 @dataclass
@@ -43,6 +49,9 @@ class QueryResult:
     columns: list[str]
     rows: list[list[Any]]
     truncated: bool = False
+    # Dashboard filters (by key) that didn't reach this query: it doesn't read the filtered table,
+    # or anything linked to it.
+    unaffected: list[str] = field(default_factory=list)
 
 
 def _json_safe(v: Any) -> Any:
@@ -69,21 +78,11 @@ def cap_rows(sql: str, dialect: str, max_rows: int = MAX_ROWS) -> str:
     return tree.sql(dialect=dialect)
 
 
-def _direct_tables(select: exp.Select) -> list[exp.Table]:
-    """Tables in this SELECT's own FROM/JOINs, not inside nested subqueries."""
-    sources = []
-    # sqlglot renamed "from" to "from_" in newer releases.
-    if from_ := select.args.get("from_") or select.args.get("from"):
-        sources.append(from_.this)
-    sources += [j.this for j in select.args.get("joins") or []]
-    return [s for s in sources if isinstance(s, exp.Table)]
-
-
 def reads_table(sql: str, dialect: str, table: str) -> bool:
     """Whether any SELECT in the query reads `table` directly (i.e. a date filter could apply)."""
     tree = sqlglot.parse_one(sql, read=dialect)
     return any(t.name.lower() == table.lower()
-               for s in tree.find_all(exp.Select) for t in _direct_tables(s))
+               for s in tree.find_all(exp.Select) for t in direct_tables(s))
 
 
 def apply_date_filter(sql: str, dialect: str, table: str, column: str, rng: DateRange) -> str:
@@ -92,7 +91,7 @@ def apply_date_filter(sql: str, dialect: str, table: str, column: str, rng: Date
     start, end_excl = rng.literals()
     applied = False
     for select in list(tree.find_all(exp.Select)):
-        for t in _direct_tables(select):
+        for t in direct_tables(select):
             if t.name.lower() == table.lower():
                 col = exp.column(column, table=t.alias_or_name)
                 cond = exp.and_(col.copy() >= exp.Literal.string(start), col < exp.Literal.string(end_excl))
@@ -104,60 +103,81 @@ def apply_date_filter(sql: str, dialect: str, table: str, column: str, rng: Date
     return tree.sql(dialect=dialect)
 
 
-def run(engine: Engine, sql: str, dialect: str, timeout_s: int = 30, max_rows: int = MAX_ROWS,
-        prepared: dict[str, str] | None = None) -> QueryResult:
-    """Validate and execute a SELECT. Raises UnsafeSQLError or QueryError.
+def prepare_sql(ctx: SourceContext, sql: str, filters: Sequence[Restriction] = ()) -> tuple[str, set[str]]:
+    """The SQL that actually runs: checked, measures expanded, prepared tables added, rows filtered.
 
-    `prepared` maps prepared-table names to their compiled SELECTs; any the query uses are added as CTEs.
+    Returns it with the keys of the dashboard filters that took effect.
     """
-    checked = ensure_read_only(sql, dialect)
+    checked = ensure_read_only(sql, ctx.dialect)
+    tree = sqlglot.parse_one(checked, read=ctx.dialect)
+    if uses_measures(tree):
+        tree = expand_measures(tree, ctx.dialect, ctx.measures)
     try:
-        expanded = with_prepared(checked, dialect, prepared or {})
+        expanded = with_prepared(tree.sql(dialect=ctx.dialect), ctx.dialect, ctx.prepared or {})
     except TransformError as exc:
         raise QueryError(str(exc)) from exc
-    safe = cap_rows(expanded, dialect, max_rows)
-    try:
-        with engine.connect() as conn:
-            raw = conn.connection.driver_connection
-            # SQLite has no statement timeout; abort long queries from a progress callback.
-            if dialect == "sqlite" and hasattr(raw, "set_progress_handler"):
-                deadline = time.monotonic() + timeout_s
-                raw.set_progress_handler(lambda: int(time.monotonic() > deadline), 10_000)
-            try:
-                result = conn.execute(text(safe))
-                columns = list(result.keys())
-                rows = [[_json_safe(v) for v in r] for r in result.fetchmany(max_rows + 1)]
-            finally:
-                if dialect == "sqlite" and hasattr(raw, "set_progress_handler"):
-                    raw.set_progress_handler(None, 0)
-    except SQLAlchemyError as exc:
-        root = getattr(exc, "orig", None) or exc
-        message = str(root).strip().splitlines()[0]
-        if "interrupted" in message.lower():
-            message = f"Query took longer than {timeout_s}s and was stopped."
-        raise QueryError(message) from exc
-    return QueryResult(columns=columns, rows=rows[:max_rows], truncated=len(rows) > max_rows)
+    restrictions = [*ctx.security, *filters]
+    if not restrictions:
+        return expanded, set()
+    tree = sqlglot.parse_one(expanded, read=ctx.dialect)
+    tree, applied = apply_row_filters(
+        tree, ctx.dialect, restrictions, ctx.relationships, strict=bool(ctx.security),
+        known_tables={t.name.lower() for t in ctx.tables if not t.error}, prepared=set(ctx.prepared),
+        schema=ctx.schema,
+    )
+    return tree.sql(dialect=ctx.dialect), applied
+
+
+def run(ctx: SourceContext, sql: str, *, max_rows: int = MAX_ROWS,
+        filters: Sequence[Restriction] = ()) -> QueryResult:
+    """Validate and execute a SELECT against `ctx`'s source. Raises UnsafeSQLError or QueryError."""
+    final, applied = prepare_sql(ctx, sql, filters)
+    safe = cap_rows(final, ctx.dialect, max_rows)
+    timeout_s = ctx.timeout_s
+    with ctx.slots or nullcontext():
+        try:
+            with ctx.engine.connect() as conn:
+                raw = conn.connection.driver_connection
+                # SQLite has no statement timeout; abort long queries from a progress callback.
+                sqlite = ctx.dialect == "sqlite" and hasattr(raw, "set_progress_handler")
+                if sqlite:
+                    deadline = time.monotonic() + timeout_s
+                    raw.set_progress_handler(lambda: int(time.monotonic() > deadline), 10_000)
+                try:
+                    result = conn.execute(text(safe))
+                    columns = list(result.keys())
+                    rows = [[_json_safe(v) for v in r] for r in result.fetchmany(max_rows + 1)]
+                finally:
+                    if sqlite:
+                        raw.set_progress_handler(None, 0)
+        except SQLAlchemyError as exc:
+            root = getattr(exc, "orig", None) or exc
+            message = str(root).strip().splitlines()[0]
+            if "interrupted" in message.lower():
+                message = f"Query took longer than {timeout_s}s and was stopped."
+            raise QueryError(message) from exc
+    unaffected = sorted({f.key for f in filters if f.key} - applied)
+    return QueryResult(columns=columns, rows=rows[:max_rows], truncated=len(rows) > max_rows, unaffected=unaffected)
 
 
 def run_widget_query(
-    engine: Engine, sql: str, dialect: str, *, kpi: bool = False,
-    date_filter: tuple[str, str] | None = None, rng: DateRange | None = None,
-    compare: DateRange | None = None, timeout_s: int = 30, prepared: dict[str, str] | None = None,
+    ctx: SourceContext, sql: str, *, kpi: bool = False, date_filter: tuple[str, str] | None = None,
+    rng: DateRange | None = None, compare: DateRange | None = None, filters: Sequence[Restriction] = (),
 ) -> QueryResult:
-    """Run a widget's SQL with the dashboard's date range. KPIs return [[value, previous]]."""
-    def filtered(r: DateRange | None) -> str:
+    """Run a widget's SQL with the dashboard's date range and filters. KPIs return [[value, previous]]."""
+    def dated(r: DateRange | None) -> str:
         if r is None or date_filter is None:
             return sql
-        return apply_date_filter(sql, dialect, date_filter[0], date_filter[1], r)
+        return apply_date_filter(sql, ctx.dialect, date_filter[0], date_filter[1], r)
 
-    result = run(engine, filtered(rng), dialect, timeout_s, prepared=prepared)
+    result = run(ctx, dated(rng), filters=filters)
     if not kpi:
         return result
     value = _first_number(result)
     previous = None
     if compare is not None and date_filter is not None:
-        previous = _first_number(run(engine, filtered(compare), dialect, timeout_s, prepared=prepared))
-    return QueryResult(columns=["value", "previous"], rows=[[value, previous]])
+        previous = _first_number(run(ctx, dated(compare), filters=filters))
+    return QueryResult(columns=["value", "previous"], rows=[[value, previous]], unaffected=result.unaffected)
 
 
 def _first_number(result: QueryResult) -> float | int | None:
@@ -174,6 +194,7 @@ __all__ = [
     "UnsafeSQLError",
     "apply_date_filter",
     "cap_rows",
+    "prepare_sql",
     "reads_table",
     "run",
     "run_widget_query",

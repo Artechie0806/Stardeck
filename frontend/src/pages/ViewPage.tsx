@@ -1,55 +1,105 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useState, type ReactNode } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
-import { Printer } from 'lucide-react'
-import { api, type Dashboard, type DatePreset } from '../api'
+import { LoaderCircle, Printer } from 'lucide-react'
+import { api, ApiError, type Cell } from '../api'
 import { DashboardGrid } from '../components/DashboardGrid'
-import { Logo } from '../components/Logo'
 import { FilterBar } from '../components/FilterBar'
-import { PRESETS } from '../lib/dates'
+import { Logo } from '../components/Logo'
+import { useCan } from '../lib/authContext'
+import { DateOptionsContext } from '../lib/dateContext'
+import { formatRange, presetLabel } from '../lib/dates'
+import { formatCategory } from '../lib/format'
+import { PrintContext } from '../lib/printing'
+import { ThemeContext, useTheme } from '../lib/themeContext'
+import { useDashboardRunner } from '../lib/useDashboardRunner'
+import { appClient, type ViewClient } from '../lib/viewClient'
 
-/** Read-only dashboard for sharing and presenting: no editing, no assistant, no sidebar. */
+/** Read-only dashboard for presenting and printing, for people who can sign in. */
 export function ViewPage() {
   const { id = '' } = useParams()
-  const [dashboard, setDashboard] = useState<Dashboard | null>(null)
-  const [preset, setPreset] = useState<DatePreset | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const canEdit = useCan('editor')
+  return (
+    <DashboardView id={id} client={appClient} title={(
+      <p className="crumb view-brand"><Logo size={20} />
+        {canEdit && <Link to={`/d/${id}`} className="btn ghost small no-print editor-link">Open in editor</Link>}</p>
+    )} onGone={<Link to="/" className="btn primary">Go to Stardeck</Link>} />
+  )
+}
+
+interface ViewProps {
+  id: string
+  /** The app's API, or a shared link's (stable across renders). */
+  client: ViewClient
+  /** Shared links: no SQL anywhere. */
+  isPublic?: boolean
+  /** What sits above the dashboard's name. */
+  title?: ReactNode
+  /** The way out when the dashboard can't be opened. */
+  onGone?: ReactNode
+}
+
+/** A dashboard to look at: no editing, no assistant, no sidebar. Dates and filters can still be
+ *  changed by whoever is looking; nothing is saved. */
+export function DashboardView({ id, client, isPublic = false, title, onGone }: ViewProps) {
+  const d = useDashboardRunner(id, client)
   const [printedAt] = useState(() => new Date().toLocaleString())
-  const [params] = useSearchParams()
-  const autoPrint = params.get('print') === '1'
+  const [params, setParams] = useSearchParams()
+  // ?print=1 (Export PDF, or the editor's PDF button): the print-ready layout, then the print dialog.
+  const printing = params.get('print') === '1'
+  const dashboard = d.def
+  const setPrinting = useCallback((on: boolean) => setParams((p) => {
+    const next = new URLSearchParams(p)
+    if (on) next.set('print', '1')
+    else next.delete('print')
+    return next
+  }, { replace: true }), [setParams])
 
-  // Viewers can change the date range for themselves; it isn't saved to the dashboard.
-  const load = useCallback(async (p: DatePreset | null) => {
-    setLoading(true)
-    try {
-      const def = await api.getDashboardDef(id)
-      const use = p ?? (def.datePreset as DatePreset)
-      const results = await api.runDashboard(id, use)
-      setDashboard({ ...def, datePreset: use, widgets: def.widgets.map((w) => ({ ...w, ...results[w.id] })) })
-      setPreset(use)
-    } catch (e) {
-      setError((e as Error).message)
-    } finally {
-      setLoading(false)
+  // Paper is white: print with the light theme, whatever the screen uses (restored afterwards).
+  const theme = useTheme()
+  useLayoutEffect(() => {
+    if (!printing) return
+    const root = document.documentElement
+    const before = root.getAttribute('data-theme')
+    root.setAttribute('data-theme', 'light')
+    return () => {
+      if (before === null) root.removeAttribute('data-theme')
+      else root.setAttribute('data-theme', before)
     }
-  }, [id])
+  }, [printing])
 
-  useEffect(() => { void load(null) }, [load])
-
-  // ?print=1 (the editor's PDF button): open the print dialog once charts have drawn.
+  // Ctrl/Cmd+P prints the print-ready layout too.
   useEffect(() => {
-    if (!autoPrint || loading || !dashboard) return
-    const t = setTimeout(() => window.print(), 1200)
-    return () => clearTimeout(t)
-  }, [autoPrint, loading, dashboard])
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'p') {
+        e.preventDefault()
+        setPrinting(true)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [setPrinting])
 
-  if (error) {
+  // Open the dialog once every chart has its data and has drawn at the page's width (maps also need
+  // their tiles); afterwards, back to the screen layout.
+  const hasMap = !!dashboard?.widgets.some((w) => w.spec.type === 'map')
+  useEffect(() => {
+    if (!printing || d.loading || !dashboard) return
+    const done = () => setPrinting(false)
+    window.addEventListener('afterprint', done, { once: true })
+    const t = setTimeout(() => window.print(), hasMap ? 2500 : 1200)
+    return () => {
+      clearTimeout(t)
+      window.removeEventListener('afterprint', done)
+    }
+  }, [printing, d.loading, dashboard, hasMap, setPrinting])
+
+  if (d.error && !dashboard) {
     return (
-      <div className="page"><section className="empty"><h2>This dashboard couldn’t be opened</h2><p>{error}</p>
-        <Link to="/" className="btn primary">Go to Stardeck</Link></section></div>
+      <div className="page"><section className="empty"><h2>This dashboard couldn’t be opened</h2><p>{d.error}</p>
+        {onGone}</section></div>
     )
   }
-  if (!dashboard || !preset) {
+  if (!dashboard) {
     return (
       <div className="page view-page" aria-busy="true">
         <div className="skeleton-line wide" /><div className="skeleton-line" />
@@ -58,25 +108,54 @@ export function ViewPage() {
     )
   }
 
-  const label = PRESETS.find((p) => p.value === preset)?.label
+  const onPick = async (widgetId: string, column: string, value: Cell) => {
+    try {
+      d.toggleCross(await client.crossFilter(id, widgetId, column, value))
+    } catch (e) {
+      if (!(e instanceof ApiError && e.status === 422)) d.setError((e as Error).message)
+    }
+  }
+  const filterText = d.active.map((f) => `${f.label}: ${(f.values?.length ? f.values : [f.value ?? null]).map(formatCategory).join(', ')}`)
   return (
-    <div className="page view-page">
+    <DateOptionsContext.Provider value={d.dateOpts}>
+    <ThemeContext.Provider value={printing ? { ...theme, resolved: 'light' } : theme}>
+    <PrintContext.Provider value={printing}>
+    {printing && (
+      <p className="print-preparing no-print" role="status"><LoaderCircle size={15} className="spin" aria-hidden /> Preparing the PDF…</p>
+    )}
+    <div className={`page view-page${printing ? ' print-sheet' : ''}`}>
       <div className="page-head">
         <div>
-          <p className="crumb view-brand"><Logo size={20} /> <Link to={`/d/${id}`} className="btn ghost small no-print editor-link">Open in editor</Link></p>
+          {title}
           <h1>{dashboard.name}</h1>
           <p className="muted">{dashboard.description}</p>
-          <p className="print-only muted">Date range: {label} · Printed {printedAt}</p>
+          <p className="print-only muted">
+            {presetLabel(d.view.preset, d.dateOpts)} ({formatRange(d.ranges.range)})
+            {filterText.length ? ` · ${filterText.join(' · ')}` : ''} · Printed {printedAt}
+          </p>
         </div>
-        <button className="btn ghost no-print" onClick={() => window.print()}><Printer size={15} aria-hidden /> Export PDF</button>
+        <button className="btn ghost no-print" onClick={() => setPrinting(true)} disabled={printing}>
+          <Printer size={15} aria-hidden /> Export PDF
+        </button>
       </div>
-      <div className="no-print"><FilterBar value={preset} onChange={(p) => void load(p)} /></div>
-      <div className={loading ? 'refetching' : undefined}>
-        <DashboardGrid widgets={dashboard.widgets} preset={preset} editing={false} readOnly
-          onLayoutChange={() => {}} onRemove={() => {}} onChangeType={() => {}}
-          onRunSql={(w, sql) => api.previewWidget(dashboard.sourceId, { ...w, sql }, preset)}
-          onSaveSql={async () => {}} />
+      <div className="no-print" data-tour="filters">
+        <FilterBar preset={d.view.preset} custom={d.view.custom} fiscalStart={d.dateOpts.fiscalStart} onDate={d.setDate}
+          filters={dashboard.filters ?? []} selections={d.selections} onSelect={d.select}
+          crossFilters={d.cross} onClearCross={d.clearCross}
+          loadValues={(f, q) => client.filterValues(id, f, q)} onClearAll={d.clearAll} />
       </div>
+      {d.error && <p className="error banner" role="alert">{d.error}</p>}
+      <DashboardGrid widgets={d.widgets} preset={d.view.preset} editing={false} readOnly hideSql={isPublic}
+        onLayoutChange={() => {}} onRemove={() => {}} onChangeType={() => {}}
+        onRunSql={async (w, sql) => {
+          if (isPublic) throw new Error('SQL isn’t available on shared dashboards.')
+          return api.previewWidget(w.sourceId ?? dashboard.sourceId, { ...w, sql }, d.ranges)
+        }}
+        onSaveSql={async () => {}} onPick={(wid, c, v) => void onPick(wid, c, v)} picked={d.picked} refreshing={d.pending}
+        filterLabels={d.filterLabels} defaultSourceId={dashboard.sourceId} printLayout={printing} />
     </div>
+    </PrintContext.Provider>
+    </ThemeContext.Provider>
+    </DateOptionsContext.Provider>
   )
 }

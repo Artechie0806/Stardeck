@@ -591,3 +591,34 @@ export function inkFor(fill: string): string {
   const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
   return lum > 0.55 ? '#0b0b0b' : '#ffffff'
 }
+
+/**
+ * The chart someone clicked to filter the dashboard keeps every mark; the picked one stays bright and the rest
+ * fade (lines get a marker at the picked point instead), so it's clear what's filtering and another pick is a click away.
+ */
+export function emphasise(option: EChartsCoreOption, label: string, c: ChartColors): EChartsCoreOption {
+  type Axis = { type?: string; data?: unknown[] } | undefined
+  const first = (a: unknown): Axis => (Array.isArray(a) ? a[0] : a) as Axis
+  const cats = [first(option.xAxis), first(option.yAxis)].find((a) => a?.type === 'category')?.data
+  const idx = cats ? cats.indexOf(label) : -1
+  const dim = (d: unknown) => {
+    const item = d !== null && typeof d === 'object' && !Array.isArray(d) ? d as Record<string, unknown> : { value: d }
+    return { ...item, itemStyle: { ...(item.itemStyle as object | undefined), opacity: 0.28 } }
+  }
+  let marked = false
+  const series = (Array.isArray(option.series) ? option.series : [option.series]).map((s) => {
+    const ser = s as { type?: string; data?: unknown[] } | undefined
+    if (!ser || !Array.isArray(ser.data)) return s
+    if (ser.type === 'bar' && idx >= 0) return { ...ser, data: ser.data.map((d, i) => (i === idx ? d : dim(d))) }
+    if (ser.type === 'line' && idx >= 0 && !marked) {
+      marked = true
+      return { ...ser, markLine: { silent: true, symbol: 'none', label: { show: false },
+        lineStyle: { color: c.textSecondary, type: 'dashed', width: 1.5 }, data: [{ xAxis: label }] } }
+    }
+    if (ser.type === 'pie' || ser.type === 'funnel' || ser.type === 'treemap') {
+      return { ...ser, data: ser.data.map((d) => ((d as { name?: string } | null)?.name === label ? d : dim(d))) }
+    }
+    return s
+  })
+  return { ...option, series }
+}

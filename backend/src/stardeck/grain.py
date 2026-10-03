@@ -5,20 +5,28 @@ per item. Small models make this mistake often, so the widget engine checks ever
 schema's foreign keys and asks the model to fix it.
 """
 
+from collections.abc import Iterable
+
 import sqlglot
 from sqlglot import exp
 
+from stardeck.context import Relationship
 from stardeck.schema import TableInfo
 
 
-def _many_sides(tables: list[TableInfo]) -> dict[str, set[str]]:
-    """one-side table -> tables holding a foreign key to it (the "many" sides)."""
+def many_sides(tables: list[TableInfo], relationships: Iterable[Relationship] = ()) -> dict[str, set[str]]:
+    """one-side table -> tables pointing at it (the "many" sides): the database's foreign keys, plus
+    the source's other relationships (inferred from names like customer_id, or added by people),
+    which is all a CSV upload has."""
     out: dict[str, set[str]] = {}
     for t in tables:
         for fk in t.foreign_keys:
             referred = fk.split("->", 1)[1].strip().rsplit(".", 1)[0].lower()
             if referred != t.name.lower():
                 out.setdefault(referred, set()).add(t.name.lower())
+    for r in relationships:
+        if r.ref_table.lower() != r.table.lower():
+            out.setdefault(r.ref_table.lower(), set()).add(r.table.lower())
     return out
 
 
@@ -45,7 +53,7 @@ def _source_table(source: exp.Expression) -> str | None:
 
 def check_fanout(sql: str, dialect: str, tables: list[TableInfo]) -> str | None:
     """Return a plain explanation of the first fan-out found, or None."""
-    many = _many_sides(tables)
+    many = many_sides(tables)
     if not many:
         return None
     columns_of = {t.name.lower(): {c.name.lower() for c in t.columns} for t in tables}
@@ -85,8 +93,22 @@ def check_fanout(sql: str, dialect: str, tables: list[TableInfo]) -> str | None:
     return None
 
 
-def measured_tables(sql: str, dialect: str) -> list[str]:
-    """Base tables whose columns are aggregated (COUNT(*) counts the FROM table), outermost first."""
+def _counted_table(sources: list[exp.Expression], links: dict[str, set[str]] | None) -> str | None:
+    """The table whose rows COUNT(*) counts: in customers JOIN orders every row is an order, whichever
+    table comes first, so it's the joined table nothing else is a "many" side of. Without links to
+    tell (or when that's ambiguous), the FROM table."""
+    bases = [b for s in sources if (b := _source_table(s))]
+    joined = set(bases)
+    if links and len(joined) > 1:
+        ends = [b for b in dict.fromkeys(bases) if not (links.get(b, set()) & joined)]
+        if len(ends) == 1:
+            return ends[0]
+    return _source_table(sources[0]) if sources else None
+
+
+def measured_tables(sql: str, dialect: str, links: dict[str, set[str]] | None = None) -> list[str]:
+    """Base tables whose rows are being measured, outermost first: the tables of aggregated columns,
+    and for COUNT(*) the table being counted (`links`, from `many_sides`, tells which one that is)."""
     try:
         tree = sqlglot.parse_one(sql, read=dialect)
     except sqlglot.errors.SqlglotError:
@@ -102,8 +124,8 @@ def measured_tables(sql: str, dialect: str) -> list[str]:
             if agg.find_ancestor(exp.Select) is not select:
                 continue
             cols = list(agg.find_all(exp.Column))
-            if not cols and sources and (base := _source_table(sources[0])):
-                found.append(base)  # COUNT(*)
+            if not cols and (counted := _counted_table(sources, links)):
+                found.append(counted)  # COUNT(*)
             for col in cols:
                 if col.table and (base := aliases.get(col.table.lower())):
                     found.append(base)

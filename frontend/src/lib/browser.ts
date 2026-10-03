@@ -23,7 +23,9 @@ export async function copyText(text: string): Promise<boolean> {
   ta.setAttribute('readonly', '')
   ta.style.position = 'fixed'
   ta.style.opacity = '0'
-  document.body.appendChild(ta)
+  // While a modal dialog is open the rest of the page is inert, so the textarea has to live inside it.
+  const host = document.querySelector('dialog[open]') ?? document.body
+  host.appendChild(ta)
   ta.select()
   let ok = false
   try {

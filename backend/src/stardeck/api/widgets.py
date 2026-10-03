@@ -2,17 +2,18 @@
 
 from datetime import date
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
 
 from stardeck.db import SourceRecord
-from stardeck.deps import LLMDep, SessionDep, StateDep
+from stardeck.deps import LLMDep, SessionDep, StateDep, WhoDep, ai_error, require
 from stardeck.llm import LLMError
 from stardeck.query import DateRange, QueryError, UnsafeSQLError, run_widget_query
 from stardeck.sources import ApiModel
 from stardeck.widgets import WidgetError, generate_widget
 
-router = APIRouter(prefix="/sources/{source_id}", tags=["widgets"])
+# Building widgets and running hand-written SQL is for editors.
+router = APIRouter(prefix="/sources/{source_id}", tags=["widgets"], dependencies=[Depends(require("editor"))])
 
 
 class DateFilter(ApiModel):
@@ -68,15 +69,15 @@ def _source(db, source_id: str) -> SourceRecord:
 
 
 @router.post("/widgets/generate", response_model=WidgetOut)
-def generate(source_id: str, req: GenerateRequest, state: StateDep, db: SessionDep, llm: LLMDep):
+def generate(source_id: str, req: GenerateRequest, state: StateDep, db: SessionDep, llm: LLMDep, who: WhoDep):
     """Turn a plain-English request into a working widget (SQL, chart spec, summary, data)."""
     rec = _source(db, source_id)
-    svc = state.sources
+    charge = state.quotas.charge(who.workspace_id, "assistant")
     try:
-        w = generate_widget(llm, svc.engine(rec), svc.dialect(rec), svc.tables(rec), svc.effective_definitions(rec),
-                            req.request, prepared=svc.prepared(rec), timeout_s=state.settings.query_timeout_s)
+        w = generate_widget(llm, state.sources.context(rec, who), req.request)
     except LLMError as exc:
-        raise HTTPException(503, f"The AI model is not available: {exc}") from exc
+        state.quotas.refund(charge)
+        raise ai_error(exc) from exc
     except WidgetError as exc:
         raise HTTPException(422, str(exc)) from exc
     return WidgetOut(
@@ -88,17 +89,15 @@ def generate(source_id: str, req: GenerateRequest, state: StateDep, db: SessionD
 
 
 @router.post("/query", response_model=ResultOut)
-def query(source_id: str, req: QueryRequest, state: StateDep, db: SessionDep):
+def query(source_id: str, req: QueryRequest, state: StateDep, db: SessionDep, who: WhoDep):
     """Run a widget's (possibly user-edited) SQL, applying the dashboard date range if given."""
     rec = _source(db, source_id)
-    svc = state.sources
     as_range = lambda r: DateRange(r.start, r.end) if r else None
     try:
         res = run_widget_query(
-            svc.engine(rec), req.sql, svc.dialect(rec), kpi=req.kpi,
+            state.sources.context(rec, who), req.sql, kpi=req.kpi,
             date_filter=(req.date_filter.table, req.date_filter.column) if req.date_filter else None,
-            rng=as_range(req.range), compare=as_range(req.compare), timeout_s=state.settings.query_timeout_s,
-            prepared=svc.prepared(rec),
+            rng=as_range(req.range), compare=as_range(req.compare),
         )
     except (UnsafeSQLError, QueryError) as exc:
         raise HTTPException(400, str(exc)) from exc

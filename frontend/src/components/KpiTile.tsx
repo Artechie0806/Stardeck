@@ -1,5 +1,6 @@
 import { ArrowDown, ArrowUp } from 'lucide-react'
 import type { ChartSpec, DatePreset, QueryResult } from '../api/types'
+import { useDateOptions } from '../lib/dateContext'
 import { compareLabel } from '../lib/dates'
 import { formatValue } from '../lib/format'
 
@@ -13,7 +14,8 @@ export function KpiTile({ spec, result, preset, dateFiltered = true }: {
   const up = change >= 0
   const good = up === (spec.upIsGood ?? true)
   // Widgets that ignore the date filter (e.g. year-on-year) have no previous period to compare with.
-  const label = dateFiltered ? compareLabel(preset) : null
+  const opts = useDateOptions()
+  const label = dateFiltered ? compareLabel(preset, opts) : null
 
   return (
     <div className="kpi">
