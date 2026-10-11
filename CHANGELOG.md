@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.5.0 — 2026-10-11
 
 Stardeck is open source.
 

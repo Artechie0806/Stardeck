@@ -1913,7 +1913,7 @@ wheels = [
 
 [[package]]
 name = "stardeck"
-version = "1.8.0"
+version = "2.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },

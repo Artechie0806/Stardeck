@@ -1,6 +1,6 @@
 [project]
 name = "stardeck"
-version = "1.8.0"
+version = "2.5.0"
 description = "Open-source, self-hosted AI dashboards for your database, powered by local LLMs."
 license = "Apache-2.0"
 requires-python = ">=3.12"
