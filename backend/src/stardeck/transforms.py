@@ -14,6 +14,8 @@ import sqlglot
 from pydantic import BaseModel, Field, TypeAdapter
 from sqlglot import exp
 
+from stardeck.sqlutil import ident, quote
+
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 PIVOT_MAX = 30  # most columns a pivot may create automatically
 CHAIN_PREV = "__STARDECK_PREV__"  # placeholder for the previous CTE in multi-pass steps
@@ -251,6 +253,60 @@ def describe(step: Step) -> str:
 
 # ---------- compilation ----------
 
+# What differs between dialects. Anything not listed uses the PostgreSQL form.
+_SPLIT_PART = {"postgres", "redshift", "duckdb", "trino", "snowflake", "databricks"}
+# (position of delimiter {d} in {e}, text before position {p}, text after it; {n} = delimiter length)
+_SPLIT_FNS = {
+    "sqlite": ("INSTR({e}, {d})", "SUBSTR({e}, 1, {p} - 1)", "SUBSTR({e}, {p} + {n})"),
+    "oracle": ("INSTR({e}, {d})", "SUBSTR({e}, 1, {p} - 1)", "SUBSTR({e}, {p} + {n})"),
+    "mysql": ("LOCATE({d}, {e})", "SUBSTRING({e}, 1, {p} - 1)", "SUBSTRING({e}, {p} + {n})"),
+    "tsql": ("CHARINDEX({d}, {e})", "SUBSTRING({e}, 1, {p} - 1)", "SUBSTRING({e}, {p} + {n}, 2147483647)"),
+    "clickhouse": ("positionUTF8({e}, {d})", "substringUTF8({e}, 1, {p} - 1)", "substringUTF8({e}, {p} + {n})"),
+    "bigquery": ("STRPOS({e}, {d})", "SUBSTR({e}, 1, {p} - 1)", "SUBSTR({e}, {p} + {n})"),
+    "postgres": ("POSITION({d} IN {e})", "SUBSTRING({e} FROM 1 FOR {p} - 1)", "SUBSTRING({e} FROM {p} + {n})"),
+    "default": ("POSITION({d} IN {e})", "SUBSTR({e}, 1, {p} - 1)", "SUBSTR({e}, {p} + {n})"),
+}
+_TEXT_TYPE = {"mysql": "CHAR", "oracle": "VARCHAR2(4000)", "tsql": "NVARCHAR(MAX)", "clickhouse": "Nullable(String)",
+              "bigquery": "STRING", "databricks": "STRING", "snowflake": "VARCHAR", "trino": "VARCHAR",
+              "duckdb": "VARCHAR", "redshift": "VARCHAR(65535)"}
+_NUMBER_TYPES = {
+    "integer": {"sqlite": "INTEGER", "mysql": "SIGNED", "oracle": "NUMBER(19)", "clickhouse": "Nullable(Int64)",
+                "bigquery": "INT64"},
+    "decimal": {"sqlite": "REAL", "postgres": "NUMERIC", "redshift": "NUMERIC(18, 4)", "oracle": "NUMBER",
+                "clickhouse": "Nullable(Float64)", "bigquery": "NUMERIC"},
+}
+# Month and weekday names are always English, like the SQLite ones.
+_DATE_PARTS = {
+    "mysql": {"year": "YEAR({c})", "month": "MONTH({c})", "day": "DAY({c})", "quarter": "QUARTER({c})",
+              "year_month": "DATE_FORMAT({c}, '%Y-%m')", "month_name": "DATE_FORMAT({c}, '%b')",
+              "weekday": "DATE_FORMAT({c}, '%a')"},
+    "tsql": {"year": "YEAR({c})", "month": "MONTH({c})", "day": "DAY({c})", "quarter": "DATEPART(QUARTER, {c})",
+             "year_month": "FORMAT({c}, 'yyyy-MM')", "month_name": "FORMAT({c}, 'MMM', 'en-US')",
+             "weekday": "FORMAT({c}, 'ddd', 'en-US')"},
+    "oracle": {"year": "EXTRACT(YEAR FROM {c})", "month": "EXTRACT(MONTH FROM {c})", "day": "EXTRACT(DAY FROM {c})",
+               "quarter": "TO_NUMBER(TO_CHAR({c}, 'Q'))", "year_month": "TO_CHAR({c}, 'YYYY-MM')",
+               "month_name": "TO_CHAR({c}, 'Mon', 'NLS_DATE_LANGUAGE=ENGLISH')",
+               "weekday": "TO_CHAR({c}, 'Dy', 'NLS_DATE_LANGUAGE=ENGLISH')"},
+    "clickhouse": {"year": "toYear({c})", "month": "toMonth({c})", "day": "toDayOfMonth({c})",
+                   "quarter": "toQuarter({c})", "year_month": "formatDateTime({c}, '%Y-%m')",
+                   "month_name": "formatDateTime({c}, '%b')", "weekday": "formatDateTime({c}, '%a')"},
+    "duckdb": {"year": "YEAR({c})", "month": "MONTH({c})", "day": "DAY({c})", "quarter": "QUARTER({c})",
+               "year_month": "STRFTIME({c}, '%Y-%m')", "month_name": "STRFTIME({c}, '%b')",
+               "weekday": "STRFTIME({c}, '%a')"},
+    "trino": {"year": "YEAR({c})", "month": "MONTH({c})", "day": "DAY({c})", "quarter": "QUARTER({c})",
+              "year_month": "DATE_FORMAT({c}, '%Y-%m')", "month_name": "DATE_FORMAT({c}, '%b')",
+              "weekday": "DATE_FORMAT({c}, '%a')"},
+    "snowflake": {"year": "YEAR({c})", "month": "MONTH({c})", "day": "DAY({c})", "quarter": "QUARTER({c})",
+                  "year_month": "TO_CHAR({c}, 'YYYY-MM')", "month_name": "TO_CHAR({c}, 'Mon')",
+                  "weekday": "TO_CHAR({c}, 'Dy')"},
+    "bigquery": {"year": "EXTRACT(YEAR FROM {c})", "month": "EXTRACT(MONTH FROM {c})", "day": "EXTRACT(DAY FROM {c})",
+                 "quarter": "EXTRACT(QUARTER FROM {c})", "year_month": "FORMAT_DATE('%Y-%m', DATE({c}))",
+                 "month_name": "FORMAT_DATE('%b', DATE({c}))", "weekday": "FORMAT_DATE('%a', DATE({c}))"},
+    "databricks": {"year": "YEAR({c})", "month": "MONTH({c})", "day": "DAY({c})", "quarter": "QUARTER({c})",
+                   "year_month": "DATE_FORMAT({c}, 'yyyy-MM')", "month_name": "DATE_FORMAT({c}, 'MMM')",
+                   "weekday": "DATE_FORMAT({c}, 'E')"},
+}
+
 class Compiler:
     """Turns a recipe into one SELECT for a dialect, tracking columns step by step."""
 
@@ -264,7 +320,7 @@ class Compiler:
         self.kinds: dict[str, str] = {}
 
     def q(self, name: str) -> str:
-        return exp.to_identifier(name, quoted=True).sql(dialect=self.dialect)
+        return quote(name, self.dialect)
 
     def kind(self, column: str) -> str:
         return self.kinds.get(column, "unknown")
@@ -334,8 +390,14 @@ class Compiler:
         # there are (SQLite's parser overflows on deeply nested subqueries), and steps that read
         # their input more than once (unpivot) refer to it by name instead of copying it.
         src, ctes = self.q(recipe.base), []
+        self.sorted_by: SortRows | None = None  # the sort still in effect
         for i, step in enumerate(steps):
             step_sql, cols = self._apply(step, src, cols, i)
+            if isinstance(step, SortRows):
+                self.sorted_by = step
+            elif isinstance(step, (GroupBy, Merge, Append, Unpivot, Pivot, RemoveDuplicates)) or (
+                    self.sorted_by and self.sorted_by.column not in cols):
+                self.sorted_by = None
             if isinstance(step_sql, list):
                 # A step that needs several passes: each SELECT reads the previous one via __PREV__.
                 for j, part in enumerate(step_sql[:-1]):
@@ -375,9 +437,14 @@ class Compiler:
                 return f"SELECT * FROM {t} WHERE {self._condition(step, i)}", cols
             case SortRows():
                 self._need(cols, step.column, step=i)
-                return f"SELECT * FROM {t} ORDER BY {q(step.column)} {'DESC' if step.descending else 'ASC'}", cols
+                order = f"ORDER BY {q(step.column)} {'DESC' if step.descending else 'ASC'}"
+                # SQL Server only allows ORDER BY in a CTE together with TOP or OFFSET.
+                return f"SELECT * FROM {t} {order}{' OFFSET 0 ROWS' if self.dialect == 'tsql' else ''}", cols
             case KeepTop():
-                return f"SELECT * FROM {t} LIMIT {step.n}", cols
+                # Repeat the sort: Trino, BigQuery and others may ignore ORDER BY in a CTE.
+                by = self.sorted_by
+                order = f"ORDER BY {q(by.column)} {'DESC' if by.descending else 'ASC'} " if by else ""
+                return f"SELECT * FROM {t} {order}LIMIT {step.n}", cols
             case RemoveDuplicates():
                 self._need(cols, *step.columns, step=i)
                 if not step.columns or set(step.columns) == set(cols):
@@ -531,13 +598,13 @@ class Compiler:
             taken.append(names[k])
             self.kinds[names[k]] = "text"
         d = exp.Literal.string(step.delimiter).sql(dialect=self.dialect)
-        before, after = self._split_fns(d)
+        before, after = self._split_fns(d, len(step.delimiter))
         keep = [q(c) for c in cols]
         text_col = f"CAST({q(step.column)} AS {self._text_type()})"
         if step.mode == "first":
             exprs = [f"{before(text_col)} AS {q(names[0])}", f"{after(text_col)} AS {q(names[1])}"]
             return f"SELECT {', '.join([*keep, *exprs])} FROM {t}", [*cols, *names]
-        if self.dialect not in ("sqlite", "mysql"):
+        if self.dialect in _SPLIT_PART:
             # SPLIT_PART returns '' for missing parts; make those NULL.
             exprs = [f"NULLIF(SPLIT_PART({text_col}, {d}, {k + 1}), '') AS {q(n)}" for k, n in enumerate(names)]
             return f"SELECT {', '.join([*keep, *exprs])} FROM {t}", [*cols, *names]
@@ -553,19 +620,13 @@ class Compiler:
         chain.append(f"SELECT {', '.join([*keep, *(q(x) for x in names)])} FROM {CHAIN_PREV} AS t")
         return chain, [*cols, *names]
 
-    def _split_fns(self, d: str):
-        """(before first delimiter, after first delimiter) for a text expression; NULL when absent."""
-        if self.dialect == "sqlite":
-            pos = lambda e: f"INSTR({e}, {d})"
-            return (lambda e: f"CASE WHEN {pos(e)} > 0 THEN SUBSTR({e}, 1, {pos(e)} - 1) ELSE {e} END",
-                    lambda e: f"CASE WHEN {pos(e)} > 0 THEN SUBSTR({e}, {pos(e)} + LENGTH({d})) END")
-        if self.dialect == "mysql":
-            pos = lambda e: f"LOCATE({d}, {e})"
-            return (lambda e: f"CASE WHEN {pos(e)} > 0 THEN SUBSTRING({e}, 1, {pos(e)} - 1) ELSE {e} END",
-                    lambda e: f"CASE WHEN {pos(e)} > 0 THEN SUBSTRING({e}, {pos(e)} + CHAR_LENGTH({d})) END")
-        pos = lambda e: f"POSITION({d} IN {e})"
-        return (lambda e: f"CASE WHEN {pos(e)} > 0 THEN SUBSTRING({e} FROM 1 FOR {pos(e)} - 1) ELSE {e} END",
-                lambda e: f"CASE WHEN {pos(e)} > 0 THEN SUBSTRING({e} FROM {pos(e)} + LENGTH({d})) END")
+    def _split_fns(self, d: str, n: int):
+        """(before first delimiter, after first delimiter) for a text expression; NULL when absent.
+        `d` is the delimiter as a SQL literal, `n` its length."""
+        pos, before, after = _SPLIT_FNS.get(self.dialect, _SPLIT_FNS["default"])
+        at = lambda e: pos.format(e=e, d=d)
+        return (lambda e: f"CASE WHEN {at(e)} > 0 THEN {before.format(e=e, p=at(e), n=n)} ELSE {e} END",
+                lambda e: f"CASE WHEN {at(e)} > 0 THEN {after.format(e=e, p=at(e), n=n)} END")
 
     def _conditional(self, step: ConditionalColumn, t: str, cols: list[str], i: int) -> tuple[str, list[str]]:
         q = self.q
@@ -616,16 +677,18 @@ class Compiler:
         return f"{c} {sym} {self.value_for(s.column, s.value, i)}"
 
     def _text_type(self) -> str:
-        return "CHAR" if self.dialect == "mysql" else "TEXT"
+        return _TEXT_TYPE.get(self.dialect, "TEXT")
 
     def _cast(self, col: str, to: str) -> str:
         d = self.dialect
         if to == "date":
-            return f"DATE({col})" if d == "sqlite" else f"CAST({col} AS DATE)"
-        types = {"text": {"mysql": "CHAR"}, "integer": {"sqlite": "INTEGER", "mysql": "SIGNED"},
-                 "decimal": {"sqlite": "REAL", "mysql": "DECIMAL(18, 4)"}}
-        default = {"text": "TEXT", "integer": "BIGINT", "decimal": "NUMERIC"}[to]
-        return f"CAST({col} AS {types[to].get(d, default)})"
+            if d == "sqlite":
+                return f"DATE({col})"
+            return f"CAST({col} AS {'Nullable(Date)' if d == 'clickhouse' else 'DATE'})"
+        if to == "text":
+            return f"CAST({col} AS {self._text_type()})"
+        default = {"integer": "BIGINT", "decimal": "DECIMAL(18, 4)"}[to]
+        return f"CAST({col} AS {_NUMBER_TYPES[to].get(d, default)})"
 
     def _date_part(self, col: str, part: str) -> str:
         d = self.dialect
@@ -640,10 +703,8 @@ class Compiler:
                 "weekday": f"CASE STRFTIME('%w', {col}) WHEN '0' THEN 'Sun' WHEN '1' THEN 'Mon' WHEN '2' THEN 'Tue' "
                            "WHEN '3' THEN 'Wed' WHEN '4' THEN 'Thu' WHEN '5' THEN 'Fri' ELSE 'Sat' END",
             }[part]
-        if d == "mysql":
-            return {"year": f"YEAR({col})", "month": f"MONTH({col})", "day": f"DAY({col})", "quarter": f"QUARTER({col})",
-                    "year_month": f"DATE_FORMAT({col}, '%Y-%m')", "month_name": f"DATE_FORMAT({col}, '%b')",
-                    "weekday": f"DATE_FORMAT({col}, '%a')"}[part]
+        if d in _DATE_PARTS:
+            return _DATE_PARTS[d][part].format(c=col)
         return {"year": f"CAST(EXTRACT(YEAR FROM {col}) AS INTEGER)", "month": f"CAST(EXTRACT(MONTH FROM {col}) AS INTEGER)",
                 "day": f"CAST(EXTRACT(DAY FROM {col}) AS INTEGER)", "quarter": f"CAST(EXTRACT(QUARTER FROM {col}) AS INTEGER)",
                 "year_month": f"TO_CHAR({col}, 'YYYY-MM')", "month_name": f"TO_CHAR({col}, 'Mon')",
@@ -672,7 +733,7 @@ class Compiler:
             real = by_lower.get(column.name.lower())
             if not real:
                 raise TransformError(f"Column \"{column.name}\" doesn't exist at this step.", i)
-            column.replace(exp.column(real, quoted=True))
+            column.replace(exp.Column(this=ident(real, self.dialect)))
         return tree.sql(dialect=self.dialect)
 
 

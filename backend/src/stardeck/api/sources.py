@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from pydantic import BaseModel, Field
 
-from stardeck.connectors import SourceConfig, SourceConnectionError, SQLiteConfig, UploadConfig
+from stardeck.connectors import FileConfig, SourceConfig, SourceConnectionError, UploadConfig
 from stardeck.dashboards import source_ids
 from stardeck.db import DashboardRecord, SourceRecord
 from stardeck.definitions import ColumnDef, Definitions, DefinitionSource, GlossaryTerm, Measure
@@ -87,7 +87,7 @@ def _visible(out: SourceOut, who: Principal) -> SourceOut:
 
 def _network_only(state, config: SourceConfig) -> None:
     """Hosted: a source is a network database or an upload, never a path on the server."""
-    if state.settings.hosted and isinstance(config, SQLiteConfig | UploadConfig):
+    if state.settings.hosted and isinstance(config, FileConfig):
         raise HTTPException(400, "Upload your SQLite, CSV or Excel files instead of giving a file path.")
 
 

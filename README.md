@@ -7,6 +7,9 @@
 
 **AI-built dashboards for your database, running entirely on your own hardware.**
 
+[![CI](https://github.com/Artechie0806/Stardeck/actions/workflows/ci.yml/badge.svg)](https://github.com/Artechie0806/Stardeck/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 Connect a database or upload a spreadsheet, and Stardeck's local AI builds a dashboard for it.
 Then refine it by chatting: *"add revenue by month"*, *"only show the top 5"*, *"sts 9 means refunded"*.
 Your data and your AI never leave your network.
@@ -54,11 +57,13 @@ Your data and your AI never leave your network.
   sensible ones on its own (and fixes ones that don't fit).
 - **Share and export.** Public read-only links (no sign-in, no SQL, can expire), PDF export that keeps every
   chart on one page, CSV download per widget.
-- **Postgres, MySQL, SQLite, CSV and Excel.** Charts load one by one as their queries finish, and each
+- **Your databases and files.** PostgreSQL, MySQL/MariaDB, SQL Server, Oracle, Snowflake, BigQuery,
+  Redshift, Databricks, ClickHouse, Trino, DuckDB, SQLite, CSV and Excel (see
+  [data sources](docs/configuration.md#data-sources)). Charts load one by one as their queries finish, and each
   source runs a limited number of queries at once. Light and dark themes. Works on phones.
 - **Run it for others.** Hosted mode gives every organisation its own private workspace, with
   invitation links, sign-in by email and an operator CLI. See [docs/hosting.md](docs/hosting.md), and
-  [deploy/README.md](deploy/README.md) to run it on a server with the landing site in `site/`.
+  [deploy/README.md](deploy/README.md) to run it on a server with HTTPS and backups.
 
 ![Some of the chart types](docs/images/chart-gallery.png)
 
@@ -72,7 +77,7 @@ You need [Docker](https://docs.docker.com/get-docker/) and a machine that can ru
 (the defaults suit a GPU with 8 GB+ VRAM, or Apple Silicon).
 
 ```bash
-git clone <this repo> stardeck && cd stardeck
+git clone https://github.com/Artechie0806/Stardeck.git stardeck && cd stardeck
 cp .env.example .env            # pick a model; optionally set STARDECK_PASSWORD
 docker compose up -d
 docker compose logs -f ollama-pull   # the first start downloads the model
@@ -117,14 +122,20 @@ cryptic columns matters far more than model size. Run the evals on your own hard
 or separately:
 
 ```bash
-cd backend && uv sync && uv run uvicorn stardeck.main:app --reload
+cd backend && uv sync --all-extras && uv run uvicorn stardeck.main:app --reload --reload-dir src
 cd frontend && npm install && npm run dev
 ```
 
 Tests: `cd backend && uv run pytest` · Lint: `uv run ruff check .` and `cd frontend && npm run lint`.
 
 More: [architecture](docs/architecture.md) · [configuration](docs/configuration.md) ·
-[adding a connector](docs/connectors.md) · [contributing](CONTRIBUTING.md) · [changelog](CHANGELOG.md)
+[adding a connector](docs/connectors.md) · [changelog](CHANGELOG.md)
+
+## Contributing
+
+Bug reports, ideas and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first,
+and please follow the [code of conduct](CODE_OF_CONDUCT.md). Found a security problem? Report it
+privately, as described in [SECURITY.md](SECURITY.md), not in a public issue.
 
 ## Security notes
 

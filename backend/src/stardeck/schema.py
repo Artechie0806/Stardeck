@@ -3,7 +3,7 @@
 import re
 
 from pydantic import BaseModel, Field
-from sqlalchemy import Engine, column, func, inspect, select, table
+from sqlalchemy import Engine, column, func, inspect, select, table, text
 
 from stardeck.definitions import Definitions
 
@@ -30,10 +30,56 @@ class TableInfo(BaseModel):
     error: str | None = None
 
 
-def introspect(engine: Engine, schema: str | None = None, sample_values: int = 5) -> list[TableInfo]:
-    insp = inspect(engine)
+class InfoSchemaInspector:
+    """Tables and columns from information_schema, for databases whose SQLAlchemy dialect can't
+    read their catalog (Redshift answers to the PostgreSQL dialect but lacks newer pg_catalog columns)."""
+
+    def __init__(self, engine: Engine):
+        self.engine = engine
+
+    def _rows(self, sql: str, **params) -> list:
+        with self.engine.connect() as conn:
+            return conn.execute(text(sql), params).all()
+
+    def _names(self, schema: str | None, kind: str) -> list[str]:
+        where = "table_schema = :s" if schema else "table_schema = current_schema()"
+        return [r[0] for r in self._rows(f"SELECT table_name FROM information_schema.tables WHERE {where} "
+                                         "AND table_type = :k ORDER BY table_name", s=schema, k=kind)]
+
+    def get_table_names(self, schema: str | None = None) -> list[str]:
+        return self._names(schema, "BASE TABLE")
+
+    def get_view_names(self, schema: str | None = None) -> list[str]:
+        return self._names(schema, "VIEW")
+
+    def get_columns(self, table_name: str, schema: str | None = None) -> list[dict]:
+        where = "table_schema = :s" if schema else "table_schema = current_schema()"
+        rows = self._rows(f"SELECT column_name, data_type FROM information_schema.columns WHERE {where} "
+                          "AND table_name = :t ORDER BY ordinal_position", s=schema, t=table_name)
+        return [{"name": r[0], "type": r[1].upper()} for r in rows]
+
+    def get_foreign_keys(self, table_name: str, schema: str | None = None) -> list[dict]:
+        return []  # Redshift doesn't enforce them; relationships are found from column names instead
+
+
+def inspector(engine: Engine, info_schema: bool = False):
+    return InfoSchemaInspector(engine) if info_schema else inspect(engine)
+
+
+def _optional(fn, *args, **kwargs) -> list:
+    """Views and foreign keys: some dialects (BigQuery, ClickHouse, ...) can't list them."""
+    try:
+        return fn(*args, **kwargs)
+    except NotImplementedError:
+        return []
+
+
+def introspect(engine: Engine, schema: str | None = None, sample_values: int = 5,
+               info_schema: bool = False) -> list[TableInfo]:
+    insp = inspector(engine, info_schema)
     names = [(n, False) for n in insp.get_table_names(schema=schema)]
-    names += [(n, True) for n in insp.get_view_names(schema=schema)]
+    views = set(_optional(insp.get_view_names, schema=schema))
+    names = [(n, n in views) for n, _ in names] + [(n, True) for n in views - {n for n, _ in names}]
     tables: list[TableInfo] = []
     with engine.connect() as conn:
         for tname, is_view in sorted(names)[:MAX_TABLES]:
@@ -54,7 +100,7 @@ def introspect(engine: Engine, schema: str | None = None, sample_values: int = 5
                 fks = [] if is_view else [
                     f"{','.join(fk['constrained_columns'])} -> {fk['referred_table']}."
                     f"{','.join(fk['referred_columns'])}"
-                    for fk in insp.get_foreign_keys(tname, schema=schema)
+                    for fk in _optional(insp.get_foreign_keys, tname, schema=schema)
                 ]
                 tables.append(TableInfo(name=tname, columns=cols, foreign_keys=fks,
                                         row_count=row_count, is_view=is_view))

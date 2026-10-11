@@ -16,7 +16,7 @@ everything else.** Small local models are reliable when every step is narrow and
 | `db.py` | Stardeck's metadata store, and workspace isolation (below). |
 | `migrations.py` | Versioned changes to the metadata DB, applied on start after a backup. |
 | `workspaces.py` | Workspaces: plan, status and per-workspace settings (financial year), cached briefly. |
-| `connectors.py` | Build read-only SQLAlchemy engines for Postgres, MySQL, SQLite and uploads. |
+| `connectors.py` | Connection settings for every kind of data source, and the (read-only where possible) SQLAlchemy engines built from them. |
 | `netguard.py` | Hosted: network databases must be on the public internet; each connection is checked and pinned to the checked address. |
 | `uploads.py` | Load CSV/Excel into a managed SQLite file with inferred column types. |
 | `schema.py` | Profile tables (columns, samples, row counts, foreign keys); flag cryptic columns; render schema for prompts. |
@@ -40,13 +40,12 @@ everything else.** Small local models are reliable when every step is narrow and
 | `auth.py`, `users.py`, `principal.py` | Sign-in (open, shared password, or accounts; email accounts when hosted), sessions stored hashed in the DB, roles, per-viewer row rules, changing your password. |
 | `invites.py` | Single-use invitation and password-reset links (stored hashed). |
 | `ratelimit.py` | In-memory sliding-window limits (sign-in attempts per address and per account). |
-| `admin.py` | The operator CLI, `stardeck-admin`: waitlist, workspaces, invitations, resets, backups. |
+| `admin.py` | The operator CLI, `stardeck-admin`: workspaces, invitations, resets, backups. |
 | `llm/status.py` | Whether the AI server is up: probed at most every 20 s with short timeouts, and updated by every real call so an offline server fails fast. |
 | `llm/gate.py` | The one queue in front of the AI server (below), and the limit on dashboard builds running at once. |
 | `plans.py`, `usage.py` | What each plan allows, and counting it: data sources, dashboards and daily AI allowances. |
 | `shares.py`, `api/public.py` | Public share links, and what anyone can reach without signing in (below). |
 | `streaming.py` | Long work in a thread, streamed as NDJSON, stopped when the browser goes away. |
-| `waitlist.py` | Waitlist sign-ups from the website and the CLI. |
 
 ## Workspaces and isolation
 

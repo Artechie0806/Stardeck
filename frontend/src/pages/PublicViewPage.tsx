@@ -4,7 +4,6 @@ import { ArrowRight, Sparkles } from 'lucide-react'
 import type { SharedDashboard } from '../api'
 import { Logo, LogoMark } from '../components/Logo'
 import { Tour, type TourStep } from '../components/Tour'
-import { WaitlistDialog } from '../components/WaitlistDialog'
 import { publicClient, ViewClientContext } from '../lib/viewClient'
 import { DashboardView } from './ViewPage'
 
@@ -28,8 +27,8 @@ function tourSteps(d: SharedDashboard): TourStep[] {
       body: 'Click a bar or a slice and the whole dashboard shows just that. Click it again to go back.' })
   }
   steps.push(d.share.demo
-    ? { target: () => document.querySelector('[data-tour="waitlist"]'), title: 'Want this for your data?',
-      body: 'Upload a spreadsheet or connect your database, and Stardeck builds a dashboard like this in about a minute. Join the waitlist for an invitation.' }
+    ? { target: () => document.querySelector('[data-tour="get"]'), title: 'Want this for your data?',
+      body: 'Stardeck is free and open source. Run it on your own computer, upload a spreadsheet or connect your database, and it builds a dashboard like this in about a minute.' }
     : { target: () => null, title: 'That’s it',
       body: 'Change the dates and filters as much as you like: nothing you do here changes the dashboard for anyone else.' })
   return steps
@@ -42,7 +41,6 @@ export function PublicViewPage() {
   const [shared, setShared] = useState<SharedDashboard | null>(null)
   const [params, setParams] = useSearchParams()
   const touring = params.get('tour') === '1' && params.get('print') !== '1'
-  const [joining, setJoining] = useState(false)
 
   useEffect(() => {
     let live = true
@@ -64,10 +62,10 @@ export function PublicViewPage() {
   return (
     <ViewClientContext.Provider value={client}>
       {shared?.share.demo && (
-        <div className="demo-bar no-print" data-tour="waitlist">
+        <div className="demo-bar no-print" data-tour="get">
           <span><Sparkles size={15} aria-hidden /> A live demo with sample data. Want Stardeck for your own?</span>
-          <button type="button" className="btn primary small" onClick={() => { endTour(); setJoining(true) }}>
-            Join the waitlist <ArrowRight size={14} aria-hidden /></button>
+          {site && <a className="btn primary small" href={site} target="_blank" rel="noreferrer">
+            Get Stardeck <ArrowRight size={14} aria-hidden /></a>}
         </div>
       )}
       <DashboardView id={token} client={client} isPublic
@@ -78,7 +76,6 @@ export function PublicViewPage() {
           : <span className="made-with no-print"><LogoMark size={14} /> Made with Stardeck</span>
       )}
       {touring && shared && steps.length > 0 && <Tour steps={steps} onClose={endTour} />}
-      {joining && <WaitlistDialog siteUrl={site} onClose={() => setJoining(false)} />}
     </ViewClientContext.Provider>
   )
 }

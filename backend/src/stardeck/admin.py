@@ -1,9 +1,8 @@
-"""Operator commands for running Stardeck Cloud (they also work on a self-hosted install).
+"""Operator commands for running a hosted Stardeck (they also work on a self-hosted install).
 
 Run them where the server's data lives, e.g. inside the backend container:
 
-    stardeck-admin waitlist list
-    stardeck-admin waitlist approve asha@acme.in --plan community --name "Acme"
+    stardeck-admin workspace create "Acme" --plan community
     stardeck-admin workspace list
     stardeck-admin workspace plan ws-1a2b3c4d5e6f7a8b enterprise
     stardeck-admin workspace limits ws-1a2b3c4d5e6f7a8b '{"sources": 3, "features": ["measures"]}'
@@ -17,7 +16,6 @@ Invitation and reset links are printed for you to send (they work once, for a fe
 """
 
 import argparse
-import csv
 import json
 import shutil
 import sys
@@ -25,7 +23,7 @@ from pathlib import Path
 
 from sqlalchemy import func
 
-from stardeck import shares, waitlist
+from stardeck import shares
 from stardeck.config import Settings
 from stardeck.db import (
     DashboardRecord,
@@ -34,7 +32,6 @@ from stardeck.db import (
     ShareLinkRecord,
     SourceRecord,
     UserRecord,
-    WaitlistRecord,
     WorkspaceRecord,
     utcnow,
 )
@@ -198,65 +195,6 @@ def revoke_sessions(state: AppState, email: str) -> None:
     print(f"Signed {user.username} out of {n} browser{'s' if n != 1 else ''}.")
 
 
-# ---------- waitlist ----------
-
-def waitlist_add(state: AppState, email: str, **fields: str) -> None:
-    waitlist.add(state.db, email, **fields)
-
-
-def waitlist_import(state: AppState, path: Path) -> int:
-    """A CSV export of a form (Tally, Google Forms...): an "email" column, plus any of name, company,
-    role, data_source, use_case."""
-    n = 0
-    with path.open(newline="", encoding="utf-8-sig") as f:
-        for row in csv.DictReader(f):
-            row = {k.strip().lower().replace(" ", "_"): (v or "") for k, v in row.items() if k}
-            email = next((v for k, v in row.items() if "email" in k), "").strip()
-            if "@" not in email:
-                continue
-            waitlist_add(state, email, **{k: row.get(k, "") for k in ("name", "company", "role", "data_source", "use_case")})
-            n += 1
-    print(f"Imported {n} people.")
-    return n
-
-
-def waitlist_list(state: AppState, status: str | None) -> None:
-    with state.db.platform_session() as s:
-        q = s.query(WaitlistRecord).order_by(WaitlistRecord.created_at)
-        rows = q.filter(WaitlistRecord.status == status).all() if status else q.all()
-    for r in rows:
-        print(f"{r.created_at:%Y-%m-%d}  {r.status:8} {r.email:32} {r.name[:24]:24} {r.company[:24]:24} {r.use_case[:60]}")
-    print(f"{len(rows)} {'people' if len(rows) != 1 else 'person'}")
-
-
-def waitlist_approve(state: AppState, email: str, plan: str, name: str | None) -> str:
-    email = email.strip().lower()
-    with state.db.platform_session() as s:
-        rec = s.query(WaitlistRecord).filter(WaitlistRecord.email == email).one_or_none()
-        person = rec.name if rec else ""
-        company = rec.company if rec else ""
-    ws = workspace_create(state, name or company or person or email.split("@")[0], plan)
-    link = invite(state, email, ws.id, "admin", person)
-    with state.db.platform_session() as s:
-        rec = s.query(WaitlistRecord).filter(WaitlistRecord.email == email).one_or_none()
-        if rec is None:
-            rec = WaitlistRecord(email=email)
-            s.add(rec)
-        rec.status, rec.workspace_id = "invited", ws.id
-        s.commit()
-    return link
-
-
-def waitlist_reject(state: AppState, email: str) -> None:
-    with state.db.platform_session() as s:
-        rec = s.query(WaitlistRecord).filter(WaitlistRecord.email == email.strip().lower()).one_or_none()
-        if rec is None:
-            raise CommandError(f"{email} isn't on the waitlist.")
-        rec.status = "rejected"
-        s.commit()
-    print(f"Marked {email} as rejected.")
-
-
 # ---------- public demo and share links ----------
 
 DEMO_FILTERS = ({"id": "city", "table": "customers", "column": "city", "label": "City"},
@@ -376,19 +314,6 @@ def parser() -> argparse.ArgumentParser:
     se = sub.add_parser("sessions", help="Sign-ins").add_subparsers(dest="cmd", required=True)
     se.add_parser("revoke", help="sign someone out everywhere").add_argument("email")
 
-    wl = sub.add_parser("waitlist", help="People asking for an invitation").add_subparsers(dest="cmd", required=True)
-    wl.add_parser("list").add_argument("--status", choices=("new", "invited", "rejected"))
-    c = wl.add_parser("add")
-    c.add_argument("email")
-    for f in ("name", "company", "role", "use_case"):
-        c.add_argument(f"--{f.replace('_', '-')}", dest=f, default="")
-    wl.add_parser("import").add_argument("csv", type=Path)
-    c = wl.add_parser("approve", help="create their workspace and print an invitation")
-    c.add_argument("email")
-    c.add_argument("--plan", default="community", choices=PLANS)
-    c.add_argument("--name", help="workspace name (default: their company)")
-    wl.add_parser("reject").add_argument("email")
-
     de = sub.add_parser("demo", help="The public demo").add_subparsers(dest="cmd", required=True)
     de.add_parser("setup", help="create or refresh it and print its link").add_argument("--name", default="Stardeck demo")
 
@@ -429,17 +354,6 @@ def run(args: argparse.Namespace, state: AppState) -> None:
             set_disabled(state, args.email, cmd == "disable")
         case ("sessions", "revoke"):
             revoke_sessions(state, args.email)
-        case ("waitlist", "list"):
-            waitlist_list(state, args.status)
-        case ("waitlist", "add"):
-            waitlist_add(state, args.email, name=args.name, company=args.company, role=args.role, use_case=args.use_case)
-            print(f"Added {args.email}.")
-        case ("waitlist", "import"):
-            waitlist_import(state, args.csv)
-        case ("waitlist", "approve"):
-            waitlist_approve(state, args.email, args.plan, args.name)
-        case ("waitlist", "reject"):
-            waitlist_reject(state, args.email)
         case ("demo", "setup"):
             demo_setup(state, args.name)
         case ("share", "list"):

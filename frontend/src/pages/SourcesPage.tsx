@@ -1,24 +1,17 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { Link } from 'react-router'
 import {
-  ArrowLeft, ArrowRight, BookOpen, ChevronRight, CircleAlert, CircleCheck, Database, Eye, EyeOff, FileSpreadsheet, HardDrive,
+  ArrowLeft, ArrowRight, BookOpen, ChevronRight, CircleAlert, CircleCheck, Database, Eye, EyeOff, FileSpreadsheet,
   LoaderCircle, PlugZap, Plus, RefreshCw, ShieldCheck, Sparkles, Upload, Wand2, X,
 } from 'lucide-react'
-import { api, type DataSource, type SourceConfig, type SourceKind, type TestResult } from '../api'
+import { api, type DataSource, type SourceKind, type TestResult } from '../api'
 import { ConfirmDelete } from '../components/ConfirmDelete'
 import { PortalHost } from '../lib/portalHost'
 import { UpgradeNote } from '../components/Upgrade'
 import { useAppConfig } from '../lib/config'
 import { relativeTime } from '../lib/format'
 import { isFull, usePlan, useUsage } from '../lib/plan'
-
-const KINDS: { value: SourceKind; label: string }[] = [
-  { value: 'postgres', label: 'PostgreSQL' },
-  { value: 'mysql', label: 'MySQL' },
-  { value: 'sqlite', label: 'SQLite file' },
-  { value: 'csv', label: 'CSV / Excel upload' },
-]
-const KIND_LABEL = Object.fromEntries(KINDS.map((k) => [k.value, k.label])) as Record<SourceKind, string>
+import { defaultName, FORMS, GROUPS, isReady, KINDS, parseUrl, toConfig, URL_KINDS, type FieldSpec } from './sourceKinds'
 
 export function SourcesPage() {
   const [sources, setSources] = useState<DataSource[] | null>(null)
@@ -96,8 +89,7 @@ export function SourcesPage() {
           return (
             <div key={s.id} className="dash-card static">
               <div className="card-top">
-                <span className="icon-tile">{s.kind === 'csv' ? <FileSpreadsheet size={19} aria-hidden />
-                  : s.kind === 'sqlite' ? <HardDrive size={19} aria-hidden /> : <Database size={19} aria-hidden />}</span>
+                <span className="icon-tile"><KindIcon kind={s.kind} /></span>
                 <div className="card-top-actions">
                   <button className="icon-btn" title="Re-read tables and columns" aria-label={`Re-scan ${s.name}`} disabled={busy === s.id}
                     onClick={() => refresh(s.id)}>
@@ -109,7 +101,7 @@ export function SourcesPage() {
                 </div>
               </div>
               <h2>{s.name}</h2>
-              <p className="detail" title={s.detail}><span className="badge">{KIND_LABEL[s.kind]}</span> <span>{s.kind === 'sqlite' ? s.detail.split('/').pop() : s.detail}</span></p>
+              <p className="detail" title={s.detail}><span className="badge">{KINDS[s.kind]?.label ?? s.kind}</span> <span>{KINDS[s.kind]?.file ? s.detail.split(/[\\/]/).pop() : s.detail}</span></p>
               {s.databaseDescription && <p>{s.databaseDescription}</p>}
               {s.profileError && <p className="error small"><CircleAlert size={13} aria-hidden /> {s.profileError}</p>}
               <div className="dash-card-meta">
@@ -130,31 +122,9 @@ export function SourcesPage() {
   )
 }
 
-const EMPTY_NET = { host: '', port: '', database: '', username: '', password: '', schema: 'public', sslmode: 'prefer' }
-
-const KIND_INFO: Record<SourceKind, { icon: typeof Database; blurb: string }> = {
-  csv: { icon: FileSpreadsheet, blurb: 'Upload .csv or Excel files. The quickest way to start.' },
-  postgres: { icon: Database, blurb: 'Connect to a PostgreSQL server with its address and a login.' },
-  mysql: { icon: Database, blurb: 'Connect to a MySQL or MariaDB server.' },
-  sqlite: { icon: HardDrive, blurb: 'A .sqlite or .db file stored on the Stardeck server.' },
-}
-const KIND_ORDER: SourceKind[] = ['csv', 'postgres', 'mysql', 'sqlite']
-
-/** "postgres://user:pass@host:5432/db?sslmode=require" -> form fields. */
-function parseUrl(text: string): Partial<typeof EMPTY_NET> & { kind?: SourceKind } | null {
-  try {
-    const u = new URL(text.trim())
-    const kind = /^postgres(ql)?:$/.test(u.protocol) ? 'postgres' : /^(mysql|mariadb):$/.test(u.protocol) ? 'mysql' : null
-    if (!kind || !u.hostname) return null
-    const ssl = u.searchParams.get('sslmode')
-    return {
-      kind, host: u.hostname, port: u.port, database: decodeURIComponent(u.pathname.replace(/^\//, '')),
-      username: decodeURIComponent(u.username), password: decodeURIComponent(u.password),
-      ...(ssl && ['prefer', 'require', 'disable'].includes(ssl) ? { sslmode: ssl } : {}),
-    }
-  } catch {
-    return null
-  }
+function KindIcon({ kind, size = 19 }: { kind: SourceKind; size?: number }) {
+  const Icon = KINDS[kind]?.icon ?? FileSpreadsheet
+  return <Icon size={size} aria-hidden />
 }
 
 function AddSourceDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
@@ -162,11 +132,11 @@ function AddSourceDialog({ onClose, onCreated }: { onClose: () => void; onCreate
   const [dialog, setDialog] = useState<HTMLDialogElement | null>(null)
   const [kind, setKind] = useState<SourceKind | null>(null)
   const [name, setName] = useState('')
-  const [net, setNet] = useState(EMPTY_NET)
+  const [values, setValues] = useState<Record<string, string>>({})
   const [path, setPath] = useState('')
   const [files, setFiles] = useState<File[]>([])
   const [over, setOver] = useState(false)
-  const [showPw, setShowPw] = useState(false)
+  const [shown, setShown] = useState<Record<string, boolean>>({})
   const [url, setUrl] = useState('')
   const [test, setTest] = useState<TestResult | null>(null)
   const [busy, setBusy] = useState<'test' | 'save' | null>(null)
@@ -177,41 +147,35 @@ function AddSourceDialog({ onClose, onCreated }: { onClose: () => void; onCreate
     return () => dialog?.close()
   }, [dialog])
 
+  // Switching kind keeps what was typed into fields both kinds share (host, username...).
   const choose = (k: SourceKind | null) => {
-    setKind(k); setTest(null); setError(null)
-    if (k === 'mysql' && net.schema === 'public') setNet({ ...net, schema: '' })
-    if (k === 'postgres' && !net.schema) setNet({ ...net, schema: 'public' })
+    setKind(k); setTest(null); setError(null); setUrl('')
+    dialog?.querySelector('.modal-content')?.scrollTo(0, 0)
+    if (k) {
+      const keys = new Set(FORMS[k]?.fields.map((f) => f.key))
+      const kept = Object.fromEntries(Object.entries(values).filter(([key, v]) => keys.has(key) && v && key !== 'port'))
+      setValues({ ...FORMS[k]?.defaults, ...kept })
+    }
   }
-  const field = (k: keyof typeof EMPTY_NET) => ({
-    value: net[k], name: k,
-    onChange: (e: { target: { value: string } }) => { setNet({ ...net, [k]: e.target.value }); setTest(null) },
-  })
+  const set = (key: string, value: string) => { setValues({ ...values, [key]: value }); setTest(null) }
   const applyUrl = (text: string) => {
     setUrl(text)
-    const parsed = parseUrl(text)
+    const parsed = kind && parseUrl(text, kind)
     if (!parsed) return
     const { kind: k, ...rest } = parsed
-    setNet({ ...net, ...rest }); setTest(null)
-    if (k && k !== kind) setKind(k)
-  }
-
-  const config = (): SourceConfig => {
-    if (kind === 'postgres') {
-      return { kind, host: net.host.trim(), port: Number(net.port) || 5432, database: net.database.trim(),
-        username: net.username.trim(), password: net.password, schema: net.schema.trim() || 'public',
-        sslmode: net.sslmode as 'disable' | 'prefer' | 'require' }
+    if (k !== kind) {
+      setKind(k); setValues({ ...FORMS[k]?.defaults, ...rest })
+    } else {
+      setValues({ ...values, ...rest })
     }
-    if (kind === 'mysql') {
-      return { kind, host: net.host.trim(), port: Number(net.port) || 3306, database: net.database.trim(),
-        username: net.username.trim(), password: net.password }
-    }
-    return { kind: 'sqlite', path: path.trim() }
+    setTest(null)
   }
 
   const runTest = async () => {
+    if (!kind) return
     setBusy('test'); setError(null)
     try {
-      setTest(await api.testConnection(config()))
+      setTest(await api.testConnection(toConfig(kind, values, path)))
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -225,7 +189,7 @@ function AddSourceDialog({ onClose, onCreated }: { onClose: () => void; onCreate
     setBusy('save'); setError(null)
     try {
       if (kind === 'csv') await api.uploadSource(name.trim() || files[0]?.name.replace(/\.\w+$/, '') || 'Upload', files)
-      else await api.createSource(name.trim() || defaultName(kind, net, path), config())
+      else await api.createSource(name.trim() || defaultName(kind, values, path) || KINDS[kind].label, toConfig(kind, values, path))
       onCreated()
     } catch (e) {
       setError((e as Error).message)
@@ -234,11 +198,69 @@ function AddSourceDialog({ onClose, onCreated }: { onClose: () => void; onCreate
     }
   }
 
-  const networked = kind === 'postgres' || kind === 'mysql'
-  const ready = kind === 'csv' ? files.length > 0
-    : kind === 'sqlite' ? path.trim() !== ''
-    : net.host.trim() !== '' && net.database.trim() !== '' && net.username.trim() !== ''
-  const Icon = kind ? KIND_INFO[kind].icon : Plus
+  const form = kind ? FORMS[kind] : undefined
+  const ready = kind === 'csv' ? files.length > 0 : kind ? isReady(kind, values, path) : false
+  const info = kind ? KINDS[kind] : null
+  const Icon = info?.icon ?? Plus
+
+  const input = (f: FieldSpec) => {
+    const value = values[f.key] ?? ''
+    const id = `src-${f.key}`
+    if (f.kind === 'checkbox') {
+      return (
+        <label key={f.key} className="checkbox">
+          <input type="checkbox" checked={value === 'true'} onChange={(e) => set(f.key, String(e.target.checked))} />
+          <span>{f.label}</span>
+        </label>
+      )
+    }
+    let control
+    if (f.kind === 'select') {
+      control = (
+        <select id={id} name={f.key} value={value} onChange={(e) => set(f.key, e.target.value)}>
+          {f.options?.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+        </select>
+      )
+    } else if (f.secret && f.multiline) {
+      control = (
+        <textarea id={id} name={f.key} rows={4} value={value} spellCheck={false} autoComplete="off" className="mono"
+          placeholder={f.placeholder} onChange={(e) => set(f.key, e.target.value)} />
+      )
+    } else if (f.secret) {
+      control = (
+        <span className="input-affix">
+          <input id={id} name={f.key} type={shown[f.key] ? 'text' : 'password'} autoComplete="new-password" value={value}
+            required={f.required} onChange={(e) => set(f.key, e.target.value)} />
+          <button type="button" className="icon-btn" onClick={() => setShown({ ...shown, [f.key]: !shown[f.key] })}
+            aria-label={shown[f.key] ? `Hide ${f.label.toLowerCase()}` : `Show ${f.label.toLowerCase()}`}>
+            {shown[f.key] ? <EyeOff size={15} /> : <Eye size={15} />}</button>
+        </span>
+      )
+    } else {
+      control = (
+        <input id={id} name={f.key} value={value} required={f.required} spellCheck={false} autoComplete="off"
+          inputMode={f.kind === 'number' ? 'decimal' : undefined} placeholder={f.placeholder}
+          onChange={(e) => set(f.key, e.target.value)} />
+      )
+    }
+    return (
+      <label key={f.key} className={`field${f.narrow ? ' port' : ''}`} htmlFor={id}>
+        <span>{f.label}</span>{control}
+        {f.hint && <small className="muted">{f.hint}</small>}
+      </label>
+    )
+  }
+  // Fields in order, with each "narrow" one (a port) on the row of the field before it.
+  const rows = (fields: FieldSpec[]) => fields.map((f, i) => {
+    if (f.narrow) return null
+    const next = fields[i + 1]
+    return next?.narrow
+      ? <div key={f.key} className="host-row">{input(f)}{input(next)}</div>
+      : input(f)
+  })
+  const section = (id: FieldSpec['section']) => form?.fields.filter((f) => f.section === id) ?? []
+  const signin = section('signin')
+  const advanced = section('advanced')
 
   return (
     <dialog ref={setDialog} className="modal" aria-labelledby="add-source-title"
@@ -254,31 +276,36 @@ function AddSourceDialog({ onClose, onCreated }: { onClose: () => void; onCreate
           )}
           <span className="icon-tile"><Icon size={19} aria-hidden /></span>
           <div className="modal-title">
-            <h2 id="add-source-title">{kind ? KIND_LABEL[kind] : 'Add a data source'}</h2>
-            <p className="muted small">{kind ? KIND_INFO[kind].blurb : 'Where does your data live?'}</p>
+            <h2 id="add-source-title">{info ? info.label : 'Add a data source'}</h2>
+            <p className="muted small">{info ? info.blurb : 'Where does your data live?'}</p>
           </div>
           <button type="button" className="icon-btn" onClick={onClose} aria-label="Close" disabled={busy !== null}><X size={18} /></button>
         </header>
 
         <div className="modal-content">
-          {!kind && (
-            <div className="kind-grid" role="list">
-              {KIND_ORDER.filter((k) => !(appConfig?.hosted && k === 'sqlite')).map((k) => {
-                const KIcon = KIND_INFO[k].icon
-                return (
-                  <button type="button" role="listitem" key={k} className="kind-tile" onClick={() => choose(k)}>
-                    <span className="icon-tile"><KIcon size={20} aria-hidden /></span>
-                    <span className="kind-text">
-                      <strong>{KIND_LABEL[k]}</strong>
-                      <span className="muted small">{KIND_INFO[k].blurb}</span>
-                    </span>
-                    {k === 'csv' && <span className="badge accent">Easiest</span>}
-                    <ChevronRight size={16} className="kind-chevron" aria-hidden />
-                  </button>
-                )
-              })}
-            </div>
-          )}
+          {!kind && GROUPS.map((g) => {
+            const kinds = g.kinds.filter((k) => !(appConfig?.hosted && KINDS[k].file))
+            const compact = g.id !== 'files'
+            return (
+              <section key={g.id} className="kind-group" aria-labelledby={`kind-group-${g.id}`}>
+                <h3 id={`kind-group-${g.id}`}>{g.label}</h3>
+                <div className={`kind-grid${compact ? ' compact' : ''}`} role="list">
+                  {kinds.map((k) => (
+                    <button type="button" role="listitem" key={k} className="kind-tile" onClick={() => choose(k)}
+                      title={compact ? KINDS[k].blurb : undefined}>
+                      <span className="icon-tile"><KindIcon kind={k} size={compact ? 17 : 20} /></span>
+                      <span className="kind-text">
+                        <strong>{KINDS[k].label}</strong>
+                        {!compact && <span className="muted small">{KINDS[k].blurb}</span>}
+                      </span>
+                      {k === 'csv' && <span className="badge accent">Easiest</span>}
+                      <ChevronRight size={16} className="kind-chevron" aria-hidden />
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )
+          })}
 
           {kind === 'csv' && (
             <label className={`dropzone${over ? ' over' : ''}${files.length ? ' has-files' : ''}`}
@@ -298,69 +325,53 @@ function AddSourceDialog({ onClose, onCreated }: { onClose: () => void; onCreate
             </label>
           )}
 
-          {networked && (
+          {kind && form && (
             <>
-              <label className="field url-field"><span>Connection URL <em>(optional shortcut)</em></span>
-                <input value={url} onChange={(e) => applyUrl(e.target.value)} spellCheck={false} autoComplete="off"
-                  placeholder={kind === 'postgres' ? 'postgres://user:password@host:5432/database' : 'mysql://user:password@host:3306/database'} />
-                {url && !parseUrl(url) && <small className="warn-text">That doesn’t look like a {KIND_LABEL[kind]} URL. You can fill in the fields below instead.</small>}
-                {url && parseUrl(url) && <small className="ok-text">Filled in the fields below.</small>}
-              </label>
+              {URL_KINDS.includes(kind) && (
+                <label className="field url-field"><span>Connection URL <em>(optional shortcut)</em></span>
+                  <input value={url} onChange={(e) => applyUrl(e.target.value)} spellCheck={false} autoComplete="off"
+                    placeholder={`${kind}://user:password@host:${form.fields.find((f) => f.key === 'port')?.placeholder}/database`} />
+                  {url && !parseUrl(url, kind) && <small className="warn-text">That doesn’t look like a {info?.label} URL. You can fill in the fields below instead.</small>}
+                  {url && parseUrl(url, kind) && <small className="ok-text">Filled in the fields below.</small>}
+                </label>
+              )}
               <fieldset className="form-section">
-                <legend>Server</legend>
-                <div className="host-row">
-                  <label className="field"><span>Host</span><input required placeholder="db.example.com" autoComplete="off" spellCheck={false} {...field('host')} /></label>
-                  <label className="field port"><span>Port</span>
-                    <input inputMode="numeric" placeholder={kind === 'postgres' ? '5432' : '3306'} {...field('port')} /></label>
-                </div>
-                <label className="field"><span>Database name</span><input required placeholder="sales" spellCheck={false} {...field('database')} /></label>
+                <legend>{kind === 'bigquery' ? 'Dataset' : kind === 'snowflake' ? 'Account' : 'Server'}</legend>
+                {rows(section('server'))}
               </fieldset>
               <fieldset className="form-section">
                 <legend>Sign in</legend>
-                <div className="two-col">
-                  <label className="field"><span>Username</span>
-                    <input required autoComplete="off" spellCheck={false} placeholder="stardeck_readonly" {...field('username')} /></label>
-                  <label className="field"><span>Password</span>
-                    <span className="input-affix">
-                      <input type={showPw ? 'text' : 'password'} autoComplete="new-password" {...field('password')} />
-                      <button type="button" className="icon-btn" onClick={() => setShowPw(!showPw)}
-                        aria-label={showPw ? 'Hide password' : 'Show password'}>{showPw ? <EyeOff size={15} /> : <Eye size={15} />}</button>
-                    </span></label>
+                <div className={signin.length === 2 && !signin.some((f) => f.multiline || f.hint) ? 'two-col' : undefined}>
+                  {rows(signin)}
                 </div>
               </fieldset>
-              {kind === 'postgres' && (
+              {advanced.length > 0 && (
                 <details className="advanced">
-                  <summary>Advanced: schema and SSL</summary>
-                  <div className="two-col">
-                    <label className="field"><span>Schema</span><input placeholder="public" {...field('schema')} /></label>
-                    <label className="field"><span>SSL</span>
-                      <select {...field('sslmode')}>
-                        <option value="prefer">Prefer (use it when the server offers it)</option>
-                        <option value="require">Require</option>
-                        <option value="disable">Disable</option>
-                      </select></label>
-                  </div>
+                  <summary>Advanced: {advanced.map((f) => f.label.split(' (')[0].toLowerCase()).join(', ')}</summary>
+                  {rows(advanced)}
                 </details>
               )}
             </>
           )}
 
-          {kind === 'sqlite' && (
+          {kind && info?.file && (
             <label className="field"><span>File path on the Stardeck server</span>
               <input required value={path} spellCheck={false} onChange={(e) => { setPath(e.target.value); setTest(null) }}
-                placeholder="/data/shop.sqlite" />
+                placeholder={kind === 'duckdb' ? '/data/warehouse.duckdb' : '/data/shop.sqlite'} />
               <small className="muted">The file must be readable by the machine running Stardeck, not your browser.</small></label>
           )}
 
           {kind && (
             <label className="field"><span>Display name <em>(optional)</em></span>
               <input value={name} onChange={(e) => setName(e.target.value)}
-                placeholder={kind === 'csv' ? (files[0]?.name.replace(/\.\w+$/, '') || 'e.g. Q3 sales') : (defaultName(kind, net, path) || 'e.g. Production sales')} /></label>
+                placeholder={kind === 'csv' ? (files[0]?.name.replace(/\.\w+$/, '') || 'e.g. Q3 sales') : (defaultName(kind, values, path) || 'e.g. Production sales')} /></label>
           )}
 
           {kind && kind !== 'csv' && (
             <p className="hint"><ShieldCheck size={15} aria-hidden />
-              <span>Stardeck only ever reads. Every connection opens in read-only mode, and a read-only database account adds one more layer of safety.</span></p>
+              <span>{info?.readOnly
+                ? 'Stardeck only ever reads. Every connection opens in read-only mode, and a read-only database account adds one more layer of safety.'
+                : `Stardeck only ever runs SELECT queries. ${info?.label} has no read-only connection mode, so sign in with an account that can only read.`}</span></p>
           )}
           {test && (
             <p className={`test-result ${test.ok ? 'ok' : 'bad'}`} role="status">
@@ -386,10 +397,4 @@ function AddSourceDialog({ onClose, onCreated }: { onClose: () => void; onCreate
       </PortalHost.Provider>
     </dialog>
   )
-}
-
-function defaultName(kind: SourceKind, net: typeof EMPTY_NET, path: string) {
-  if (kind === 'sqlite') return path.split('/').pop()?.replace(/\.\w+$/, '') || ''
-  if (kind === 'csv') return ''
-  return net.database || ''
 }

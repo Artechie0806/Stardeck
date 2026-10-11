@@ -20,6 +20,23 @@ dependencies = [
     "openpyxl>=3.1.5",
 ]
 
+# Drivers for more databases. PostgreSQL, MySQL/MariaDB, SQLite and uploads need none of these.
+[project.optional-dependencies]
+sqlserver = ["pymssql>=2.3"]
+oracle = ["oracledb>=2.0"]
+clickhouse = ["clickhouse-connect>=0.8"]
+duckdb = ["duckdb>=1.1", "duckdb-engine>=0.13"]
+trino = ["trino>=0.330"]
+snowflake = ["snowflake-sqlalchemy>=1.7"]
+bigquery = ["sqlalchemy-bigquery>=1.12"]
+databricks = ["databricks-sqlalchemy>=2.0"]
+all = ["stardeck[sqlserver,oracle,clickhouse,duckdb,trino,snowflake,bigquery,databricks]"]
+
+[project.urls]
+Homepage = "https://github.com/Artechie0806/Stardeck"
+Issues = "https://github.com/Artechie0806/Stardeck/issues"
+Changelog = "https://github.com/Artechie0806/Stardeck/blob/main/CHANGELOG.md"
+
 [project.scripts]
 stardeck-admin = "stardeck.admin:main"
 

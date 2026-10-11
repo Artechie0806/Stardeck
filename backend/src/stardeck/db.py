@@ -181,23 +181,6 @@ class InviteRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
-class WaitlistRecord(Base):
-    """People who asked for an invitation (hosted)."""
-
-    __tablename__ = "waitlist"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    email: Mapped[str] = mapped_column(String(200), unique=True)
-    name: Mapped[str] = mapped_column(String(200), default="")
-    company: Mapped[str] = mapped_column(String(200), default="")
-    role: Mapped[str] = mapped_column(String(200), default="")
-    data_source: Mapped[str] = mapped_column(String(200), default="")
-    use_case: Mapped[str] = mapped_column(Text, default="")
-    status: Mapped[str] = mapped_column(String(20), default="new")  # new | invited | rejected
-    workspace_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-
-
 class AppSettingRecord(Base):
     """Legacy install-wide settings (before workspaces); migration 1 moves them into the default
     workspace. Kept so older databases still open."""

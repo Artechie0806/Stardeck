@@ -26,10 +26,11 @@ class Guard:
     def __init__(self, deny: list[str] | None = None):
         self.deny = [ipaddress.ip_network(d, strict=False) for d in deny or []]
 
-    def check_fields(self, host: str, database: str = "", username: str = "") -> None:
+    def check_fields(self, host: str, *fields: str) -> None:
+        """`fields`: the database name, user and anything else a driver might read as options."""
         if not host or len(host) > 253 or not _HOST.match(host):
             raise BlockedAddress("Use the database server's host name or IP address.")
-        for value in (database, username):
+        for value in fields:
             if _BAD_FIELD.search(value or ""):
                 raise BlockedAddress("The database name and user can't contain '=' or '://'.")
 
@@ -51,7 +52,7 @@ class Guard:
         for *_rest, sockaddr in infos:
             ip = ipaddress.ip_address(sockaddr[0].split("%")[0])
             if not self.allowed(ip):
-                raise BlockedAddress(f"{host} is on a private network. Stardeck Cloud can only connect to "
+                raise BlockedAddress(f"{host} is on a private network. A hosted Stardeck can only connect to "
                                      "databases reachable over the internet.")
             ips.append(str(ip))
         if not ips:

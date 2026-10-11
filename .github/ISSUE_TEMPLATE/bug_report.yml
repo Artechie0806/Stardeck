@@ -1,0 +1,36 @@
+name: Bug report
+description: Something doesn't work as it should
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead. Screenshots help.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to reproduce it
+      placeholder: |
+        1. Connect a PostgreSQL source…
+        2. Ask the assistant "…"
+  - type: input
+    id: version
+    attributes:
+      label: Stardeck version
+      placeholder: e.g. 1.8.0 (in backend/pyproject.toml, or from /api/health)
+  - type: input
+    id: model
+    attributes:
+      label: Model and model server
+      placeholder: e.g. qwen3.5:9b on Ollama
+  - type: dropdown
+    id: source
+    attributes:
+      label: Data source
+      options: [PostgreSQL, MySQL, SQLite, CSV or Excel upload, Several, Not relevant]
+  - type: markdown
+    attributes:
+      value: "Please leave out passwords, connection strings and real customer data. Found a security problem? Report it privately instead: see SECURITY.md."

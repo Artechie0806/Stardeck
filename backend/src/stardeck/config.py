@@ -59,10 +59,11 @@ class Settings(BaseSettings):
     password: str | None = None
     session_hours: int = 24 * 14
 
-    # Hosted mode (Stardeck Cloud): many private workspaces on one server, accounts by email and
+    # Hosted mode: many private workspaces on one server, accounts by email and
     # invitation only, no local files as data sources. Self-hosted installs leave this off.
     hosted: bool = False
-    # Public addresses (hosted): the app, public share links, and the marketing site.
+    # Public addresses (hosted): the app, public share links, and an optional page about your service
+    # (e.g. the project's GitHub page) that shared dashboards and the demo link to.
     public_url: str | None = None
     share_url: str | None = None
     site_url: str | None = None
@@ -75,10 +76,6 @@ class Settings(BaseSettings):
     ssrf_deny: Annotated[list[str], NoDecode] = []
     # The public demo: its newest share link is what /demo opens (`stardeck-admin demo setup`).
     demo_workspace_id: str = "ws-demo"
-    # Optional pings for each waitlist sign-up: an ntfy topic URL, and/or a Telegram bot and chat.
-    waitlist_ntfy_url: str | None = None
-    telegram_bot_token: str | None = None
-    telegram_chat_id: str | None = None
 
     @field_validator("operator_emails", "ssrf_deny", mode="before")
     @classmethod

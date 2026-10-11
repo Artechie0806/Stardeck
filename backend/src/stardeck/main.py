@@ -53,6 +53,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 state.seed_sample(db, fixed_ids=True)
         app.state.stardeck = state
         yield
+        state.sources.engines.close()
 
     app = FastAPI(title="Stardeck", version=__version__, lifespan=lifespan)
     app.add_middleware(AuthMiddleware, settings=settings)

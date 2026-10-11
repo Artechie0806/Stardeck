@@ -12,7 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from pydantic.alias_generators import to_camel
-from sqlalchemy import inspect, select
+from sqlalchemy import select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 from sqlglot import exp
@@ -20,8 +20,6 @@ from sqlglot import exp
 from stardeck import connectors
 from stardeck.config import Settings
 from stardeck.connectors import (
-    MySQLConfig,
-    PostgresConfig,
     SourceConfig,
     SourceConnectionError,
     SQLiteConfig,
@@ -44,8 +42,9 @@ from stardeck.measures import check_measure
 from stardeck.netguard import Guard
 from stardeck.principal import SYSTEM, Principal
 from stardeck.query import QueryError, UnsafeSQLError, run
-from stardeck.schema import ColumnInfo, TableInfo, flag_column, introspect, render_schema
+from stardeck.schema import ColumnInfo, TableInfo, flag_column, inspector, introspect, render_schema
 from stardeck.secrets import SecretBox
+from stardeck.sqlutil import dialect_name, ident, quote
 from stardeck.transforms import (
     NAME_RE,
     PIVOT_MAX,
@@ -150,6 +149,14 @@ class EngineRegistry:
         if hit:
             hit[0].dispose()
 
+    def close(self) -> None:
+        """Dispose every engine (on shutdown), so no connection or file stays open."""
+        with self._lock:
+            engines = [e for e, _ in self._engines.values()]
+            self._engines.clear()
+        for e in engines:
+            e.dispose()
+
 
 class SourceService:
     def __init__(self, settings: Settings, box: SecretBox, engines: EngineRegistry, workspaces=None):
@@ -166,22 +173,24 @@ class SourceService:
 
     def _store_config(self, config: SourceConfig) -> dict:
         data = config.model_dump(by_alias=True)
-        password = data.pop("password", None)
-        if password:
-            data["password_enc"] = self.box.encrypt(password)
+        for field in config.secrets:  # passwords, tokens, keys: stored encrypted
+            value = data.pop(field, None)
+            if value:
+                data[f"{field}_enc"] = self.box.encrypt(value)
         return data
 
     def load_config(self, rec: SourceRecord) -> SourceConfig:
         data = dict(rec.config)
-        enc = data.pop("password_enc", None)
-        if enc:
-            data["password"] = self.box.decrypt(enc)
+        for field in connectors.SECRETS.get(rec.kind, ()):
+            enc = data.pop(f"{field}_enc", None)
+            if enc:
+                data[field] = self.box.decrypt(enc)
         return _config_adapter.validate_python(data)
 
     def engine(self, rec: SourceRecord) -> Engine:
         def build() -> Engine:
             config = self.load_config(rec)
-            if self.settings.hosted and isinstance(config, SQLiteConfig | connectors.UploadConfig):
+            if self.settings.hosted and isinstance(config, connectors.FileConfig):
                 self.check_local_file(config.path)  # defence in depth: never another file on the server
             return connectors.build_engine(config, self.settings.query_timeout_s, self.guard)
         return self.engines.get(rec.id, build)
@@ -210,8 +219,7 @@ class SourceService:
     def context(self, rec: SourceRecord, who: Principal) -> SourceContext:
         """Everything needed to query `rec` as `who`, including their row-level security rules."""
         config = self.load_config(rec)
-        schema = (config.db_schema if isinstance(config, PostgresConfig)
-                  else config.database if isinstance(config, MySQLConfig) else None)
+        schema = config.schema_name()
         return SourceContext(
             id=rec.id, name=rec.name, engine=self.engine(rec), dialect=self.dialect(rec),
             tables=self.tables(rec), defs=self.effective_definitions(rec), prepared=self.prepared(rec),
@@ -437,7 +445,7 @@ class SourceService:
         """Row count, samples and inferred types for a prepared table, by querying its SELECT."""
         dialect = self.dialect(rec)
         ctx = dataclasses.replace(self.context(rec, SYSTEM), prepared={**compiled, name: sql})
-        q = lambda n: exp.to_identifier(n, quoted=True).sql(dialect=dialect)
+        q = lambda n: quote(n, dialect)
         try:
             head = run(ctx, f"SELECT * FROM {q(name)}", max_rows=1000)
             count = run(ctx, f"SELECT COUNT(*) FROM {q(name)}").rows[0][0]
@@ -475,8 +483,8 @@ class SourceService:
                 name=t.name, row_count=t.row_count, description=tdef.description if tdef else None,
                 foreign_keys=t.foreign_keys, is_view=t.is_view, prepared=t.prepared, error=t.error, columns=cols,
             ))
-        hidden = {"password_enc", "path"} if self.settings.hosted else {"password_enc"}  # no server paths
-        public = {k: v for k, v in rec.config.items() if k not in hidden}
+        hidden = {"path"} if self.settings.hosted else set()  # no server paths
+        public = {k: v for k, v in rec.config.items() if k not in hidden and not k.endswith("_enc")}
         stored = self.definitions(rec)
         ignored = set(stored.ignored_relationships)
         rels = [RelationshipOut(table=r.table, column=r.column, ref_table=r.ref_table, ref_column=r.ref_column,
@@ -499,9 +507,14 @@ class SourceService:
         """Connect and count tables. Raises SourceConnectionError with a readable message."""
         engine = connectors.check_connection(config, self.settings.query_timeout_s, self.guard)
         try:
-            insp = inspect(engine)
+            insp = inspector(engine, info_schema=config.info_schema)
             schema = connectors.schema_of(config)
-            return len(insp.get_table_names(schema=schema)) + len(insp.get_view_names(schema=schema))
+            tables = set(insp.get_table_names(schema=schema))
+            try:
+                tables |= set(insp.get_view_names(schema=schema))
+            except NotImplementedError:
+                pass
+            return len(tables)
         finally:
             engine.dispose()
 
@@ -522,15 +535,16 @@ class SourceService:
         if config.kind != rec.kind:
             raise ValueError("A source's type can't be changed; add a new source instead.")
         old = self.load_config(rec)
-        if rec.kind == "csv" or rec.sample or (self.settings.hosted and rec.kind == "sqlite"):
+        if rec.kind == "csv" or rec.sample or (self.settings.hosted and connectors.DIALECTS[rec.kind] in ("sqlite", "duckdb")):
             # Files Stardeck manages (uploads, sample data) can only be renamed: their location
             # isn't the admin's to change.
             rec.name = name.strip() or rec.name
             db.commit()
             return rec
-        # An empty password in the edit form means "keep the stored one".
-        if hasattr(config, "password") and not config.password and getattr(old, "password", ""):
-            config = config.model_copy(update={"password": old.password})
+        # An empty password (token, key) in the edit form means "keep the stored one".
+        keep = {f: getattr(old, f) for f in config.secrets if not getattr(config, f) and getattr(old, f, "")}
+        if keep:
+            config = config.model_copy(update=keep)
         connectors.check_connection(config, self.settings.query_timeout_s, self.guard).dispose()
         rec.name, rec.config = name.strip() or rec.name, self._store_config(config)
         self.engines.drop(rec.id)
@@ -541,7 +555,8 @@ class SourceService:
     def profile(self, rec: SourceRecord) -> None:
         try:
             config = self.load_config(rec)
-            rec.snapshot = [t.model_dump() for t in introspect(self.engine(rec), connectors.schema_of(config))]
+            rec.snapshot = [t.model_dump() for t in introspect(self.engine(rec), connectors.schema_of(config),
+                                                               info_schema=rec.kind in connectors.INFO_SCHEMA)]
             rec.profile_error = None
         except Exception as exc:  # noqa: BLE001 - surfaced to the user on the source page
             rec.profile_error = str(exc).splitlines()[0][:500]
@@ -608,7 +623,7 @@ class SourceService:
         check_measure(m, self.dialect(rec), {c.name.lower() for c in table.columns})
         ctx = self.context(rec, SYSTEM)
         ctx.defs.measures = [x for x in ctx.defs.measures if x.name != m.name] + [m]
-        q = exp.to_identifier(table.name, quoted=True).sql(dialect=ctx.dialect)
+        q = quote(table.name, ctx.dialect)
         try:
             res = run(ctx, f"SELECT MEASURE({m.name}) AS value FROM {q}", max_rows=1)
         except UnsafeSQLError as exc:
@@ -635,7 +650,7 @@ class SourceService:
         returned with its overall value; nothing is saved until the user accepts one."""
         existing = {m.name for m in self.definitions(rec).measures}
         messages = [
-            {"role": "system", "content": MEASURE_PROMPT.format(dialect=self.dialect(rec),
+            {"role": "system", "content": MEASURE_PROMPT.format(dialect=dialect_name(self.dialect(rec)),
                                                                 schema=self.prompt_schema(rec))},
             {"role": "user", "content": "Suggest the measures this business would use most."},
         ]
@@ -688,11 +703,11 @@ class SourceService:
         t = next((x for x in ctx.tables if x.name.lower() == table.lower() and not x.error), None)
         if t is None or not any(c.name == column for c in t.columns):
             raise QueryError(f"There's no column {table}.{column}.")
-        col = exp.column(column, quoted=True)
-        q = (exp.select(col.as_("v")).distinct().from_(exp.Table(this=exp.to_identifier(t.name, quoted=True)))
+        col = exp.Column(this=ident(column, ctx.dialect))
+        q = (exp.select(col.as_("v")).distinct().from_(exp.Table(this=ident(t.name, ctx.dialect)))
              .where(exp.Not(this=exp.Is(this=col.copy(), expression=exp.Null()))).order_by(col.copy()))
         if search.strip():
-            text_col = exp.cast(col.copy(), "TEXT") if ctx.dialect != "mysql" else exp.cast(col.copy(), "CHAR")
+            text_col = exp.cast(col.copy(), "CHAR" if ctx.dialect == "mysql" else "VARCHAR(4000)" if ctx.dialect == "oracle" else "TEXT")
             q = q.where(exp.Like(this=exp.Lower(this=text_col),
                                  expression=exp.Literal.string(f"%{search.strip().lower()}%")), append=True)
         res = run(ctx, q.limit(limit + 1).sql(dialect=ctx.dialect), max_rows=limit + 1)

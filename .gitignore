@@ -12,7 +12,7 @@ backend/evals/reports/*.json
 backend/evals/.cache/
 /Stardeck Logo Directions
 scripts/seed_stardeck_test.py
-# /brag video renders (the finished video is copied to site/media/)
+# /brag video renders
 /brag-output*/
 # deploy/run-local.sh: its Caddy, data and logs
 /deploy/.local/

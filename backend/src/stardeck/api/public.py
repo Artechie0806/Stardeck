@@ -1,5 +1,4 @@
-"""/api/public: what works without signing in. Shared dashboards (by link), the public demo, and the
-waitlist.
+"""/api/public: what works without signing in. Shared dashboards (by link) and the public demo.
 
 Anyone can reach these, so they're narrow on purpose and rate limited per address:
 
@@ -19,7 +18,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import Field
 
-from stardeck import shares, waitlist
+from stardeck import shares
 from stardeck.api.maps import GeocodeRequest, ShortenRequest
 from stardeck.context import Restriction, SourceContext
 from stardeck.crossfilter import check_filter, trace_category
@@ -254,17 +253,3 @@ def demo(request: Request, state: StateDep) -> dict:
     if token is None:
         raise HTTPException(404, "There's no public demo right now.")
     return {"token": token}
-
-
-# ---------- waitlist ----------
-
-@router.post("/waitlist", status_code=202)
-def join_waitlist(req: waitlist.WaitlistIn, request: Request, state: StateDep) -> dict:
-    """Ask for an invitation. The answer is the same whether or not the email was already on the
-    list, so the form can't be used to find out who signed up."""
-    if wait := limits.hit(f"waitlist:{client_key(request)}", *waitlist.PER_IP):
-        raise too_many(wait, "sign-ups from your network")
-    if limits.hit("waitlist:all", *waitlist.PER_DAY):
-        raise HTTPException(503, "We're getting a lot of sign-ups today. Please try again tomorrow.")
-    waitlist.join(state, req)
-    return {"ok": True}

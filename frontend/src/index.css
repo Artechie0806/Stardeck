@@ -654,6 +654,14 @@ dialog.modal::backdrop { background: var(--backdrop); -webkit-backdrop-filter: b
   background: var(--surface-2);
 }
 .kind-grid { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
+.kind-group h3 {
+  margin: 20px 0 0; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted);
+}
+.kind-group:first-child h3 { margin-top: 12px; }
+.kind-group .kind-grid { margin-top: 8px; }
+.kind-grid.compact { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.kind-grid.compact .kind-tile { padding: 10px 12px; gap: 10px; }
+.kind-grid.compact .icon-tile { width: 32px; height: 32px; border-radius: 10px; }
 .kind-tile {
   display: flex; align-items: center; gap: 14px; width: 100%; padding: 14px 16px; text-align: left; font: inherit; color: var(--text);
   border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-strong); cursor: pointer;
@@ -710,6 +718,7 @@ dialog.modal::backdrop { background: var(--backdrop); -webkit-backdrop-filter: b
   .modal-foot { padding: 12px 18px max(12px, env(safe-area-inset-bottom)); }
   .modal-foot .btn { flex: 1; padding: 11px 12px; }
   .two-col { grid-template-columns: 1fr; }
+  .kind-grid.compact { grid-template-columns: 1fr; }
   .host-row { grid-template-columns: minmax(0, 1fr) 92px; }
 }
 
@@ -1393,14 +1402,6 @@ html.chat-locked, html.chat-locked body { overflow: hidden; }
 }
 .demo-bar > span { display: inline-flex; align-items: center; gap: 6px; }
 .demo-bar > span > svg { color: var(--accent); }
-.waitlist-dialog { width: min(600px, calc(100vw - 32px)); }
-.waitlist-dialog form { flex: 1; }
-.waitlist-dialog .modal-foot { align-items: center; }
-.waitlist-honey { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
-.waitlist-done { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; padding: 32px 28px 30px; outline: none; }
-.waitlist-done .icon-tile.large { margin-bottom: 6px; color: var(--accent); background: var(--accent-wash); }
-.waitlist-done h3 { margin: 0; font-size: 18px; }
-.waitlist-done p { max-width: 36em; margin: 0 0 12px; line-height: 1.5; }
 .made-with {
   position: fixed; z-index: 30; right: 16px; bottom: 16px; display: inline-flex; align-items: center; gap: 6px;
   padding: 6px 12px 6px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; text-decoration: none;

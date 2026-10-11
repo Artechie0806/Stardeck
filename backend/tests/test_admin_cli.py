@@ -1,4 +1,4 @@
-"""The operator CLI: waitlist to workspace to signed-in person, and looking after accounts."""
+"""The operator CLI: workspace to signed-in person, and looking after accounts."""
 
 import re
 
@@ -28,15 +28,11 @@ def token_in(out: str, kind: str) -> str:
     return re.search(rf"{APP_URL}/{kind}/(\S+)", out).group(1)
 
 
-def test_waitlist_to_signed_in_workspace(settings, capsys, tmp_path):
-    csv = tmp_path / "form.csv"
-    csv.write_text("Email address,Name,Company,Use case\nasha@acme.in,Asha Rao,Acme,Sales by city\nnot-an-email,x,y,z\n")
-    assert "Imported 1" in run(settings, capsys, "waitlist", "import", str(csv))
-    assert "asha@acme.in" in run(settings, capsys, "waitlist", "list", "--status", "new")
-    out = run(settings, capsys, "waitlist", "approve", "asha@acme.in")
+def test_invitation_to_signed_in_workspace(settings, capsys):
+    ws = re.search(r"Created (ws-\w+)", run(settings, capsys, "workspace", "create", "Acme")).group(1)
+    out = run(settings, capsys, "invite", "asha@acme.in", "--workspace", ws, "--name", "Asha Rao")
     assert "Hi Asha," in out and "Subject: Your Stardeck invitation" in out
     token = token_in(out, "invite")
-    assert "invited" in run(settings, capsys, "waitlist", "list")
     listing = run(settings, capsys, "workspace", "list")
     assert "Acme" in listing and "community" in listing
 

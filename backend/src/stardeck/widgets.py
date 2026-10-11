@@ -25,6 +25,7 @@ from stardeck.llm import LLMClient, LLMError
 from stardeck.measures import expand_sql, fiscal_note, measure_for_column
 from stardeck.query import QueryError, QueryResult, UnsafeSQLError, reads_table, run
 from stardeck.schema import TableInfo, render_schema
+from stardeck.sqlutil import dialect_name
 
 ValueFormat = Literal["number", "currency", "percent"]
 
@@ -363,7 +364,7 @@ def generate_widget(llm: LLMClient, ctx: SourceContext, request: str, *, max_att
     tables, defs, dialect = ctx.tables, ctx.defs, ctx.dialect
     chosen = select_tables(usable_tables(tables, request), defs, request)
     messages = [
-        {"role": "system", "content": PROMPT.format(dialect=dialect, schema=render_schema(chosen, defs),
+        {"role": "system", "content": PROMPT.format(dialect=dialect_name(dialect), schema=render_schema(chosen, defs),
                                                     chart_guide=CHART_GUIDE, fiscal=fiscal_note(ctx.fiscal_start))},
         {"role": "user", "content": request},
     ]

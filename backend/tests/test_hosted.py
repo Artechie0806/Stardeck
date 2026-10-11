@@ -215,3 +215,10 @@ def test_ai_details_only_for_the_people_who_run_it(hosted):
 
 def test_self_hosted_admins_see_ai_details(client):
     assert "base_url" in client.get("/api/health").json()["llm"]
+
+
+def test_no_duckdb_files_either(hosted, tmp_path):
+    app, _ = hosted
+    c, _ = join(app)
+    res = c.post("/api/sources", json={"name": "x", "config": {"kind": "duckdb", "path": str(tmp_path / "a.duckdb")}})
+    assert res.status_code == 400 and "Upload" in res.json()["detail"]

@@ -2,9 +2,11 @@ FROM python:3.12-slim
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 WORKDIR /app
 COPY pyproject.toml uv.lock* ./
-RUN uv sync --frozen --no-dev --no-install-project
+# Database drivers to include (see docs/configuration.md#data-sources), e.g. "sqlserver" or "all".
+ARG EXTRAS=all
+RUN uv sync --frozen --no-dev --no-install-project --extra $EXTRAS
 COPY src ./src
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --extra $EXTRAS
 ENV STARDECK_DATA_DIR=/data
 EXPOSE 8000
 # One process only: sign-in limits and other safeguards live in memory. Forwarded headers are

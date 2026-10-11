@@ -6,12 +6,12 @@ Hosted mode turns one Stardeck server into many private workspaces, one per orga
 - Each workspace only ever sees its own data sources, dashboards and people.
 - You, the operator, manage everything with the `stardeck-admin` command on the server.
 
-Self-hosted installs don't need any of this. To put it on a server, with the landing site, share
-links and backups, follow [deploy/README.md](../deploy/README.md).
+Self-hosted installs don't need any of this. To put it on a server, with HTTPS, share links
+and backups, follow [deploy/README.md](../deploy/README.md).
 
 ## Configuration
 
-Set these in the backend's environment (see [configuration.md](configuration.md#hosted-mode-stardeck-cloud)):
+Set these in the backend's environment (see [configuration.md](configuration.md#hosted-mode)):
 
 ```bash
 STARDECK_HOSTED=true
@@ -62,7 +62,7 @@ More about links:
 - **Badge:** Community links show a small "Made with Stardeck" badge.
 - **Operator controls:** `stardeck-admin share list [--workspace ws-…]` shows every working link and its views. `stardeck-admin share revoke <token>` turns one off, for example after an abuse report.
 
-## The public demo and the waitlist
+## The public demo
 
 ```bash
 stardeck-admin demo setup
@@ -70,15 +70,8 @@ stardeck-admin demo setup
 
 This creates (or refreshes) the `ws-demo` workspace. The workspace has the sample data, City and
 Category filters on its dashboard, and a share link. `/demo` on the share host always opens the
-newest demo link, with a four-step tour. The demo shows a "Join the waitlist" bar instead of the
-badge.
-
-The website's form posts to `/api/public/waitlist`:
-
-- **Limits:** 5 sign-ups an hour per address, and 300 a day overall.
-- **Same answer:** it responds the same way whether or not the email was already listed.
-- **Bots:** a hidden field catches them.
-- **Pings:** set `STARDECK_WAITLIST_NTFY_URL` or the Telegram settings to get a message for each new sign-up.
+newest demo link, with a four-step tour. Instead of the badge, the demo shows a bar with a
+"Get Stardeck" button that opens `STARDECK_SITE_URL` (e.g. the project's GitHub page).
 
 ## Plans
 
@@ -121,25 +114,15 @@ Run the commands where the server's data lives. With Docker, prefix them with:
 docker compose exec backend uv run stardeck-admin ...
 ```
 
-### Waitlist and invitations
+### Invitations
 
 ```bash
-stardeck-admin waitlist import form-export.csv      # an "email" column, plus name, company, role, use_case
-stardeck-admin waitlist add asha@acme.in --name "Asha Rao" --company "Acme"
-stardeck-admin waitlist list --status new
-stardeck-admin waitlist approve asha@acme.in --plan community   # creates the workspace and prints the invitation
-stardeck-admin waitlist reject someone@example.com
+stardeck-admin workspace create "Acme" --plan community   # with sample data (--no-sample to skip)
+stardeck-admin invite asha@acme.in --workspace ws-1a2b3c4d5e6f7a8b --name "Asha Rao"
 ```
 
-`approve` creates a workspace with sample data, named after their company. It prints the invitation
-link and an email you can paste. Opening the link lets them choose a name and password, and then
-they're signed in as the workspace's admin.
-
-To add someone else to an existing workspace:
-
-```bash
-stardeck-admin invite ravi@acme.in --workspace ws-1a2b3c4d5e6f7a8b --role editor
-```
+`invite` prints the invitation link and an email you can paste. Opening the link lets them choose a
+name and password, and then they're signed in as the workspace's admin (`--role` picks another role).
 
 Workspace admins can also add people themselves on the People page. The page shows the sign-in
 details to send them.

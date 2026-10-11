@@ -1,11 +1,10 @@
-# Running Stardeck Cloud
+# Running a hosted Stardeck
 
 One small VPS runs Caddy and the backend. The AI runs on your own GPU at home, reached over
 Tailscale. When that PC is off, the AI pauses; dashboards, filters and share links keep working.
 
 ```
 browser ──HTTPS──▶ Caddy (VPS) ──▶ backend (VPS) ──Tailscale──▶ LM Studio (your PC)
-                   stardeck.example        landing page, waitlist
                    app.stardeck.example    the app
                    share.stardeck.example  public share links (public API only)
 ```
@@ -14,11 +13,11 @@ See [docs/hosting.md](../docs/hosting.md) for plans and the `stardeck-admin` com
 
 ## 1. Domain
 
-Point `stardeck.example`, `www`, `app` and `share` (A/AAAA records) at the VPS.
+Point `app.stardeck.example` and `share.stardeck.example` (A/AAAA records) at the VPS.
 
 ## 2. The VPS
 
-- **Size and system:** Ubuntu 24.04, 2 vCPU / 4 GB, in India.
+- **Size and system:** Ubuntu 24.04, 2 vCPU / 4 GB, close to your users.
 - **Access:** SSH keys only, and `unattended-upgrades` on.
 - **Firewall:** `ufw` allowing only 22, 80 and 443 (and 443/udp).
 - **Memory:** a 2 GB swap file.
@@ -55,8 +54,7 @@ cp deploy/.env.example deploy/.env
 Fill in every value. `deploy/.env` is ignored by git, so never commit it.
 
 - **Secret key:** make one as the file describes, and keep a copy in your password manager. Without it, stored database passwords can't be read.
-- **Website details:** `CONTACT_EMAIL`, `OPERATOR_NAME` and `OPERATOR_CITY` appear in the privacy policy and terms.
-- **Legal review:** have both pages (`site/privacy.html`, `site/terms.html`) reviewed before charging anyone.
+- **Your own terms:** if other people will use your server, publish a privacy policy and terms that fit where you and they are.
 
 ## 6. Start
 
@@ -65,14 +63,14 @@ docker compose -f deploy/docker-compose.hosted.yml up -d --build
 docker compose -f deploy/docker-compose.hosted.yml exec backend uv run --frozen --no-dev stardeck-admin demo setup
 ```
 
-`demo setup` prints the demo's share link. The landing page's "Try the live demo" opens it through `/demo`, so it keeps working after the demo is rebuilt.
+`demo setup` prints the demo's share link. `https://share.stardeck.example/demo` always opens the newest one, so it keeps working after the demo is rebuilt.
 
-Then invite people from the waitlist:
+Then create a workspace and invite its first admin:
 
 ```
 alias sd='docker compose -f deploy/docker-compose.hosted.yml exec backend uv run --frozen --no-dev stardeck-admin'
-sd waitlist list
-sd waitlist approve asha@acme.in      # creates their workspace and prints an invitation email
+sd workspace create "Acme" --plan community
+sd invite asha@acme.in --workspace ws-…   # prints an invitation email to send
 ```
 
 ## 7. Backups
@@ -93,7 +91,7 @@ The secret key isn't in the backups. Keep it separately, as above.
 
 ## 8. Monitoring
 
-- **Uptime:** watch `https://app.stardeck.example/api/ping`, the landing page and `https://share.stardeck.example/demo` (e.g. UptimeRobot).
+- **Uptime:** watch `https://app.stardeck.example/api/ping` and `https://share.stardeck.example/demo` (e.g. UptimeRobot).
 - **AI:** alert only after 30 minutes offline. Short pauses are normal when the PC restarts.
 - **Backups:** healthchecks.io via `HEALTHCHECK_URL`.
 

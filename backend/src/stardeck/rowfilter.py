@@ -23,7 +23,8 @@ from stardeck.sqlutil import is_cte_reference
 MAX_DEPTH = 4  # relationship hops a restriction travels (orders -> order lines -> ...)
 
 # Qualifiers that just mean "this database" in each dialect.
-_DEFAULT_DBS = {"sqlite": {"main"}, "postgres": {"public"}, "mysql": set()}
+_DEFAULT_DBS = {"sqlite": {"main"}, "duckdb": {"main"}, "postgres": {"public"}, "redshift": {"public"},
+                "mysql": set(), "tsql": {"dbo"}}
 
 
 def apply_row_filters(

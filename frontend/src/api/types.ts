@@ -183,7 +183,9 @@ export interface GlossaryTerm {
   definition: string
 }
 
-export type SourceKind = 'postgres' | 'mysql' | 'sqlite' | 'csv'
+export type SourceKind =
+  | 'postgres' | 'mysql' | 'redshift' | 'sqlserver' | 'oracle' | 'clickhouse' | 'trino'
+  | 'databricks' | 'snowflake' | 'bigquery' | 'sqlite' | 'duckdb' | 'csv'
 
 export interface Measure {
   name: string
@@ -224,10 +226,22 @@ export interface DataSource {
   relationships: Relationship[]
 }
 
+type SslMode = 'disable' | 'prefer' | 'require'
+
+/** Connection settings sent to the server. Secrets (password, token, key) may be empty when editing. */
 export type SourceConfig =
-  | { kind: 'postgres'; host: string; port: number; database: string; username: string; password: string; schema: string; sslmode: 'disable' | 'prefer' | 'require' }
+  | { kind: 'postgres'; host: string; port: number; database: string; username: string; password: string; schema: string; sslmode: SslMode }
   | { kind: 'mysql'; host: string; port: number; database: string; username: string; password: string }
+  | { kind: 'redshift'; host: string; port: number; database: string; username: string; password: string; schema: string; sslmode: SslMode }
+  | { kind: 'sqlserver'; host: string; port: number; database: string; username: string; password: string; schema: string; encryption: 'off' | 'request' | 'require' }
+  | { kind: 'oracle'; host: string; port: number; service_name: string; username: string; password: string; schema: string }
+  | { kind: 'clickhouse'; host: string; port: number; database: string; username: string; password: string; secure: boolean }
+  | { kind: 'trino'; host: string; port: number; catalog: string; schema: string; username: string; password: string; https: boolean }
+  | { kind: 'databricks'; host: string; http_path: string; token: string; catalog: string; schema: string }
+  | { kind: 'snowflake'; account: string; username: string; password: string; private_key: string; warehouse: string; database: string; schema: string; role: string }
+  | { kind: 'bigquery'; project: string; dataset: string; credentials_json: string; location: string; max_gb_billed: number }
   | { kind: 'sqlite'; path: string }
+  | { kind: 'duckdb'; path: string }
 
 export interface TestResult {
   ok: boolean
@@ -328,7 +342,7 @@ export interface AuthStatus {
   required: boolean
   authenticated: boolean
   user: CurrentUser | null
-  /** Stardeck Cloud: people sign in with their email, into their own workspace. */
+  /** Hosted mode: people sign in with their email, into their own workspace. */
   hosted?: boolean
   workspace?: WorkspaceInfo | null
 }

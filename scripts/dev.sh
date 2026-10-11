@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-(cd backend && uv sync -q && uv run uvicorn stardeck.main:app --reload --port 8000) &
+(cd backend && uv sync -q --all-extras && uv run uvicorn stardeck.main:app --reload --reload-dir src --port 8000) &
 BACKEND=$!
 trap 'kill $BACKEND 2>/dev/null' EXIT
 

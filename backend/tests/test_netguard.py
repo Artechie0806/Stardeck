@@ -7,9 +7,14 @@ from sqlalchemy import event
 
 from stardeck import netguard
 from stardeck.connectors import (
+    ClickHouseConfig,
     MySQLConfig,
+    OracleConfig,
     PostgresConfig,
+    RedshiftConfig,
     SourceConnectionError,
+    SQLServerConfig,
+    TrinoConfig,
     build_engine,
     check_connection,
 )
@@ -100,3 +105,40 @@ def test_self_hosted_connections_are_not_restricted(monkeypatch):
     with pytest.raises(Stop):
         engine.connect()
     assert "hostaddr" not in seen
+
+
+NEW_SERVERS = [
+    SQLServerConfig(host="db.example.com", database="d", username="u"),
+    OracleConfig(host="db.example.com", service_name="s", username="u"),
+    ClickHouseConfig(host="db.example.com"),
+    RedshiftConfig(host="db.example.com", database="d", username="u"),
+    TrinoConfig(host="db.example.com", catalog="c", schema="s", username="u"),
+]
+
+
+@pytest.mark.parametrize("config", NEW_SERVERS, ids=lambda c: c.kind)
+def test_every_network_database_is_guarded(monkeypatch, config):
+    answers(monkeypatch, "10.0.0.5")
+    with pytest.raises(SourceConnectionError, match="private network"):
+        check_connection(config, guard=Guard())
+
+
+@pytest.mark.parametrize(("config", "key", "expected"), [
+    (NEW_SERVERS[0], "host", "93.184.216.34:1433"),
+    (NEW_SERVERS[1], "dsn", "(HOST=93.184.216.34)"),
+    (NEW_SERVERS[2], "host", "93.184.216.34"),
+    (NEW_SERVERS[3], "hostaddr", "93.184.216.34"),
+], ids=["sqlserver", "oracle", "clickhouse", "redshift"])
+def test_drivers_connect_to_the_checked_address(monkeypatch, config, key, expected):
+    answers(monkeypatch, "93.184.216.34")
+    engine = build_engine(config, guard=Guard())
+    seen = {}
+
+    @event.listens_for(engine, "do_connect")
+    def _capture(dialect, record, cargs, cparams):
+        seen.update(cparams)
+        raise Stop
+
+    with pytest.raises(Stop):
+        engine.connect()
+    assert expected in seen[key]

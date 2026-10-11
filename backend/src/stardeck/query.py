@@ -85,6 +85,15 @@ def reads_table(sql: str, dialect: str, table: str) -> bool:
                for s in tree.find_all(exp.Select) for t in direct_tables(s))
 
 
+# These won't compare a date column with a string; elsewhere a plain string also suits text dates.
+_TYPED_DATES = {"oracle", "trino"}
+
+
+def _date(iso: str, dialect: str) -> exp.Expression:
+    literal = exp.Literal.string(iso)
+    return exp.DateStrToDate(this=literal) if dialect in _TYPED_DATES else literal
+
+
 def apply_date_filter(sql: str, dialect: str, table: str, column: str, rng: DateRange) -> str:
     """Restrict every SELECT that reads `table` to rows where `column` falls inside `rng`."""
     tree = sqlglot.parse_one(sql, read=dialect)
@@ -94,7 +103,7 @@ def apply_date_filter(sql: str, dialect: str, table: str, column: str, rng: Date
         for t in direct_tables(select):
             if t.name.lower() == table.lower():
                 col = exp.column(column, table=t.alias_or_name)
-                cond = exp.and_(col.copy() >= exp.Literal.string(start), col < exp.Literal.string(end_excl))
+                cond = exp.and_(col.copy() >= _date(start, dialect), col < _date(end_excl, dialect))
                 select.where(cond, append=True, copy=False)
                 applied = True
                 break

@@ -53,11 +53,51 @@ STARDECK_LLM_BASE_URL=http://gpu-box:8000/v1
 Lookups are throttled to Nominatim's 1 request/second policy and cached permanently in Stardeck's
 database, so each place is looked up once.
 
+## Data sources
+
+PostgreSQL, MySQL/MariaDB, SQLite and CSV/Excel uploads work out of the box. The other databases
+need their driver, an optional extra of the backend. The Docker image includes all of them.
+Without Docker, install them with `cd backend && uv sync --extra all`, or only the ones you need:
+
+| Database | Extra | Read-only connection | Notes |
+|---|---|---|---|
+| PostgreSQL (and Supabase, Neon, TimescaleDB, CockroachDB) | built in | yes | |
+| MySQL / MariaDB | built in | yes | |
+| SQLite file, CSV / Excel upload | built in | yes | |
+| SQL Server / Azure SQL | `sqlserver` | no | Azure SQL needs encryption "require". |
+| Oracle 12c+ | `oracle` | yes | Thin driver, no Oracle Client needed. Plain TCP only. |
+| ClickHouse | `clickhouse` | yes | The HTTP interface: 8123, or 8443 with HTTPS. |
+| DuckDB file | `duckdb` | yes | Queries can't read other files or URLs. No query timeout. |
+| Amazon Redshift | built in | no | |
+| Snowflake | `snowflake` | no | A password or an unencrypted PKCS#8 key pair. |
+| Google BigQuery | `bigquery` | no | A service account key. Queries that would scan more than "most data one query may scan" (10 GB by default) fail instead of being billed. |
+| Databricks SQL warehouse | `databricks` | no | A personal access token. |
+| Trino / Starburst | `trino` | no | Passwords are only sent over HTTPS. |
+
+Every query is checked to be a single SELECT first, and functions that read files, URLs or other
+servers (DuckDB `read_csv`, ClickHouse `url()`, SQL Server `OPENROWSET`, Oracle `UTL_HTTP`...) are
+refused. Where the connection can't be opened read-only, sign in with an account that can only
+read. Passwords, tokens, private keys and service account keys are stored encrypted.
+
+Hosted mode doesn't offer SQLite or DuckDB files (only uploads). It checks the address of every
+network database on each connection; Trino and Databricks connect over HTTPS by name, so for those
+the check runs just before connecting rather than on the very address used. BigQuery keys must use
+Google's own token server.
+
+Known limits:
+
+- **Sort as the last step of a prepared table:** Trino and BigQuery may not keep that order (a sort
+  followed by "Keep top rows" always works).
+- **BigQuery and scanning:** reading a new dataset samples every column. On very large tables this can
+  reach the "most data one query may scan" cap; that table then shows an error instead of samples.
+- **Docker image size:** the drivers make the backend image about 1 GB. Build with
+  `--build-arg EXTRAS=sqlserver` (or another extra) to include only what you use.
+
 ## Limits
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `STARDECK_QUERY_TIMEOUT_S` | `30` | Per query, enforced by the database (Postgres, MySQL) or by Stardeck (SQLite). |
+| `STARDECK_QUERY_TIMEOUT_S` | `30` | Per query, enforced by the database or, for SQLite, by Stardeck. DuckDB queries have no timeout. |
 | `STARDECK_MAX_QUERIES_PER_SOURCE` | `4` | Queries Stardeck runs at once against one data source. Lower it for a busy production database. |
 | `STARDECK_MAX_UPLOAD_MB` | `200` | Total size of one CSV/Excel upload. |
 | `STARDECK_CORS_ORIGINS` | `["http://localhost:5173"]` | Only needed when the frontend is served from another origin. |
@@ -68,7 +108,7 @@ database, so each place is looked up once.
 |---|---|---|
 | `STARDECK_FISCAL_YEAR_START` | `4` | Month the financial year starts (1 = January, 4 = April). Quarters follow it. Admins can change it in Settings, which takes precedence. |
 
-## Hosted mode (Stardeck Cloud)
+## Hosted mode
 
 For running Stardeck as a service: many private workspaces on one server, accounts by invitation,
 sign-in by email. Self-hosted installs leave all of this unset. See [hosting.md](hosting.md).
@@ -77,14 +117,12 @@ sign-in by email. Self-hosted installs leave all of this unset. See [hosting.md]
 |---|---|---|
 | `STARDECK_HOSTED` | `false` | Turns hosted mode on. Stardeck refuses to start if `STARDECK_PUBLIC_URL` is missing or `STARDECK_PASSWORD` is set. |
 | `STARDECK_PUBLIC_URL` | unset | The app's address, e.g. `https://app.example.com`. Invitation links point here, and only requests from this origin may change things. |
-| `STARDECK_UPGRADE_URL` | unset | Where "Upgrade" links in the app go: your pricing page or a `mailto:` link. Defaults to `STARDECK_SITE_URL/#pricing` when that's set. |
+| `STARDECK_UPGRADE_URL` | unset | Where "Upgrade" links in the app go: your pricing page or a `mailto:` link. |
 | `STARDECK_OPERATOR_EMAILS` | unset | Comma-separated emails of the people who run the service. They see the AI server's details. |
 | `STARDECK_SSRF_DENY` | unset | Comma-separated addresses or ranges data sources may never reach (e.g. the server's own public IP). Private and internal ranges are always blocked. |
 | `STARDECK_SHARE_URL` | `STARDECK_PUBLIC_URL` | Where public share links point, e.g. `https://share.example.com`. A separate host means sign-in cookies are never sent with a share link. |
-| `STARDECK_SITE_URL` | unset | The website. Shared dashboards link to it, the demo's "Join the waitlist" goes to `#waitlist` there, and map lookups name it as the contact. |
+| `STARDECK_SITE_URL` | unset | A page about your service, e.g. the project's GitHub page. Shared dashboards and the demo's "Get Stardeck" button link to it, and map lookups name it as the contact. |
 | `STARDECK_DEMO_WORKSPACE_ID` | `ws-demo` | The public demo's workspace. `/demo` opens its newest share link (`stardeck-admin demo setup`). |
-| `STARDECK_WAITLIST_NTFY_URL` | unset | An ntfy topic URL. Each new waitlist sign-up is posted there. |
-| `STARDECK_TELEGRAM_BOT_TOKEN`, `STARDECK_TELEGRAM_CHAT_ID` | unset | A Telegram bot and chat that get each new waitlist sign-up. |
 
 Hosted mode needs HTTPS: sign-in cookies are marked Secure (browsers accept them over plain HTTP
 only on `localhost`). Run exactly one backend process: sign-in limits live in memory.

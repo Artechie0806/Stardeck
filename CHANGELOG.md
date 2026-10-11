@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+Stardeck is open source.
+
+- **More data sources:** SQL Server and Azure SQL, Oracle, Snowflake, Google BigQuery, Amazon Redshift,
+  Databricks, ClickHouse, Trino and DuckDB files, next to PostgreSQL, MySQL/MariaDB, SQLite and uploads.
+  - **Drivers:** optional extras of the backend (`uv sync --extra all`). The Docker image includes them all.
+  - **Everything works on them:** the AI writes each database's own SQL, and dashboard filters, security
+    rules, measures and every prepared-table step compile for it.
+  - **Safety:** functions that read files, URLs or other servers are refused, BigQuery queries have a cap on
+    data scanned, and tokens and keys are stored encrypted like passwords. Some of these databases have no
+    read-only connection mode; the source form says so.
+  - **Picking a source:** the "Add a data source" dialog groups them into files, databases, and
+    warehouses and query engines.
+- **Fixed:** "Keep top rows" after "Sort" now keeps the top rows of the sorted table on every database.
+
+- **Removed: the marketing website and the waitlist.**
+  - **Website:** `site/` is gone, with its legal pages and contact settings.
+  - **Waitlist:** the sign-up endpoint (`/api/public/waitlist`), its ntfy and Telegram pings, and `stardeck-admin waitlist` are gone. To let someone in, create a workspace with `stardeck-admin workspace create`, then send an invitation with `stardeck-admin invite`.
+  - **Hosted deploys:** they run on two hosts, the app and share links (`SITE_DOMAIN`, `CONTACT_EMAIL`, `OPERATOR_NAME` and `OPERATOR_CITY` are no longer used).
+  - **Settings:** remove `STARDECK_WAITLIST_NTFY_URL`, `STARDECK_TELEGRAM_BOT_TOKEN` and `STARDECK_TELEGRAM_CHAT_ID` from your environment.
+  - **Existing databases:** an old `waitlist` table is left as it is, unused.
+- **The public demo:** its "Join the waitlist" bar now has a "Get Stardeck" button. The button opens `STARDECK_SITE_URL` (e.g. the project's GitHub page) and is hidden when that isn't set.
+- **Upgrade links:** they no longer fall back to `STARDECK_SITE_URL/#pricing`. Set `STARDECK_UPGRADE_URL` to show them.
+- **Fixed:** stopping the server now closes its connections to data sources. On Windows, an open connection kept uploaded files locked, so deleting a workspace failed.
+- **For contributors:** a code of conduct, a security policy, issue and pull request templates, and CI (lint, tests and build on every pull request).
+
 ## 1.8.0 — 2026-10-03
 
 - **PDF export keeps every chart whole.**

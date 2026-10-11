@@ -33,7 +33,7 @@ from stardeck.users import UserDirectory, UserError, normalize, verify_password
 
 COOKIE = "stardeck_session"
 OPEN_PATHS = ("/api/auth/", "/api/ping")
-# Shared links, the demo and the waitlist: for anyone, never as the signed-in person (no cookie used).
+# Shared links and the demo: for anyone, never as the signed-in person (no cookie used).
 PUBLIC_PATHS = ("/api/public/",)
 Mode = Literal["open", "password", "users"]
 LEGACY = "legacy-password"  # session subject for the shared-password mode

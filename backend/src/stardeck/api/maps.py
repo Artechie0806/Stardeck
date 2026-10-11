@@ -22,10 +22,9 @@ def client_config(state: StateDep, who: WhoDep) -> dict:
 
 def _config(state, who: Principal) -> dict:
     s = state.settings
-    upgrade = s.upgrade_url or (f"{s.site_url.rstrip('/')}/#pricing" if s.site_url else None)
     return {"mapTiles": s.map_tiles_url, "mapAttribution": s.map_attribution, "geocoding": state.geocoder.enabled,
             "fiscalYearStart": state.workspaces.fiscal_year_start(who.workspace_id), "hosted": s.hosted,
-            "plan": state.workspaces.plan(who.workspace_id).to_json(), "upgradeUrl": upgrade,
+            "plan": state.workspaces.plan(who.workspace_id).to_json(), "upgradeUrl": s.upgrade_url,
             # Where public links live (hosted: a separate host that never sees sign-in cookies).
             "shareUrl": (s.share_url or s.public_url or "").rstrip("/") or None}
 

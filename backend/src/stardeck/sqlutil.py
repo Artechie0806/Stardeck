@@ -1,5 +1,6 @@
 """Small sqlglot helpers shared by the query runner, row filters and measures."""
 
+from functools import cache
 from typing import Any
 
 from sqlglot import exp
@@ -63,3 +64,47 @@ def is_cte_reference(table: exp.Table) -> bool:
                 return True
         node = parent
     return False
+
+
+# How the AI is told which SQL to write, with the habits other dialects most often get wrong.
+_DIALECT_NAMES = {
+    "postgres": "PostgreSQL",
+    "mysql": "MySQL",
+    "sqlite": "SQLite",
+    "duckdb": "DuckDB",
+    "redshift": "Amazon Redshift",
+    "tsql": "SQL Server T-SQL (TOP n instead of LIMIT; FORMAT(d, 'yyyy-MM') for year-month)",
+    "oracle": "Oracle (FETCH FIRST n ROWS ONLY instead of LIMIT; TO_CHAR(d, 'YYYY-MM') for year-month)",
+    "clickhouse": "ClickHouse (formatDateTime(d, '%Y-%m') for year-month)",
+    "trino": "Trino (date_format(d, '%Y-%m') for year-month)",
+    "snowflake": "Snowflake (TO_CHAR(d, 'YYYY-MM') for year-month)",
+    "bigquery": "BigQuery standard SQL (FORMAT_DATE('%Y-%m', d) for year-month)",
+    "databricks": "Databricks Spark SQL (date_format(d, 'yyyy-MM') for year-month)",
+}
+
+
+def dialect_name(dialect: str) -> str:
+    return _DIALECT_NAMES.get(dialect, dialect)
+
+
+# Unquoted names are stored in uppercase here, and SQLAlchemy reports them in lowercase, except
+# names it would have to quote (reserved words like SIZE), which it reports as stored.
+_UPPERCASE_DIALECTS = {"oracle", "snowflake"}
+
+
+@cache
+def _preparer(dialect: str):
+    from sqlalchemy.dialects import oracle
+
+    return oracle.dialect().identifier_preparer  # Snowflake's reserved words are close enough
+
+
+def ident(name: str, dialect: str) -> exp.Identifier:
+    """A quoted identifier for a table or column name as Stardeck knows it (from SQLAlchemy)."""
+    if dialect in _UPPERCASE_DIALECTS and name == name.lower() and not _preparer(dialect)._requires_quotes(name):
+        name = name.upper()
+    return exp.to_identifier(name, quoted=True)
+
+
+def quote(name: str, dialect: str) -> str:
+    return ident(name, dialect).sql(dialect=dialect)

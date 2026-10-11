@@ -29,6 +29,7 @@ from stardeck.query import (
     run,
 )
 from stardeck.schema import render_schema
+from stardeck.sqlutil import dialect_name
 from stardeck.widgets import is_date_column, pick_date_column, select_tables, usable_tables
 
 MAX_STEPS = 5  # model calls, including the final answer
@@ -179,10 +180,10 @@ def analyse(llm: LLMClient, ctxs: Sequence[SourceContext], question: str, histor
     if len(ctxs) == 1:
         c = ctxs[0]
         schema = render_schema(select_tables(usable_tables(c.tables, question), c.defs, question), c.defs)
-        dialects = c.dialect
+        dialects = dialect_name(c.dialect)
     else:
         schema = "\n\n".join(
-            f'SOURCE "{c.name}" ({c.dialect} SQL; set "source" to this name to query it):\n'
+            f'SOURCE "{c.name}" ({dialect_name(c.dialect)} SQL; set "source" to this name to query it):\n'
             + render_schema(select_tables(usable_tables(c.tables, question), c.defs, question), c.defs)
             for c in ctxs)
         dialects = "each source's own SQL dialect, given with its tables"

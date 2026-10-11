@@ -1,17 +1,16 @@
-"""Public share links, the demo and the waitlist: what anyone on the internet can reach."""
+"""Public share links and the demo: what anyone on the internet can reach."""
 
 import json
 import threading
 from datetime import timedelta
 
-import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from stardeck import admin, shares
 from stardeck.api import public
 from stardeck.config import Settings
-from stardeck.db import ShareLinkRecord, WaitlistRecord, utcnow
+from stardeck.db import ShareLinkRecord, utcnow
 from stardeck.geo import Geocoder
 from stardeck.invites import Invites
 from stardeck.main import create_app
@@ -244,26 +243,3 @@ def test_a_dashboard_has_ten_links_at_most(app):
         assert c.post(f"/api/dashboards/{d['id']}/shares", json={}).status_code == 201
     res = c.post(f"/api/dashboards/{d['id']}/shares", json={})
     assert res.status_code == 400 and "Turn one off" in res.json()["detail"]
-
-
-# ---------- waitlist ----------
-
-def test_waitlist_sign_ups(app, monkeypatch):
-    sent = []
-    monkeypatch.setattr(httpx, "post", lambda url, **kw: sent.append((url, kw)) or httpx.Response(200, request=httpx.Request("POST", url)))
-    state = app.state.stardeck
-    state.settings.waitlist_ntfy_url = "https://ntfy.sh/stardeck-test"
-    site = TestClient(app, base_url="https://example.com")
-    form = {"email": " Asha@Acme.in ", "name": "Asha", "company": "Acme", "useCase": "Sales dashboards"}
-    assert site.post("/api/public/waitlist", json=form, headers={"Origin": "https://example.com"}).status_code == 202
-    assert site.post("/api/public/waitlist", json={**form, "company": "Changed"}).status_code == 202  # same answer
-    assert site.post("/api/public/waitlist", json={"email": "bot@spam.io", "website": "http://spam"}).status_code == 202
-    assert site.post("/api/public/waitlist", json={"email": "not-an-email"}).status_code == 422
-    with state.db.platform_session() as s:
-        rows = {r.email: (r.company, r.use_case, r.status) for r in s.query(WaitlistRecord)}
-    assert rows == {"asha@acme.in": ("Acme", "Sales dashboards", "new")}  # the bot was dropped
-    threading.Event().wait(0.3)  # the ping is sent in the background
-    assert len(sent) == 1 and sent[0][0] == "https://ntfy.sh/stardeck-test" and b"Asha" in sent[0][1]["content"]
-    for i in range(3):  # 5 an hour per address, counting the 2 above
-        site.post("/api/public/waitlist", json={"email": f"p{i}@x.in"})
-    assert site.post("/api/public/waitlist", json={"email": "late@x.in"}).status_code == 429

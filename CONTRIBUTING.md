@@ -3,6 +3,16 @@
 Thanks for helping! Stardeck aims to stay small, reliable with small local models, and easy to
 self-host.
 
+Please follow the [code of conduct](CODE_OF_CONDUCT.md). Security problems go through
+[SECURITY.md](SECURITY.md), never a public issue.
+
+## Issues
+
+- **Bugs:** say what you did, what you expected and what happened, with your Stardeck version, model
+  and data source. Leave out passwords and real customer data.
+- **Ideas:** describe the problem you're trying to solve; it's the most useful part.
+- **Before a big change:** open an issue first so we can agree on the approach.
+
 ## Setup
 
 ```bash
@@ -18,6 +28,8 @@ model server (LM Studio, Ollama, vLLM...) for anything that calls the model.
 cd backend && uv run ruff check . && uv run pytest
 cd frontend && npm run lint && npm run build
 ```
+
+CI runs the same checks on every pull request. Add user-facing changes to `CHANGELOG.md`.
 
 If you touch prompts or the widget engine, run the evals for at least one model and include the
 before/after summary in the PR:

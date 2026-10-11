@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Back up Stardeck Cloud: the metadata database and every uploaded file, encrypted with age and
+# Back up a hosted Stardeck: the metadata database and every uploaded file, encrypted with age and
 # copied off the server with rclone. Run from cron every 6 hours (see README.md).
 #
 # Needs: age, rclone, and these in the environment (or in /etc/stardeck-backup.env):

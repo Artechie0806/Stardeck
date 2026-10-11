@@ -8,7 +8,7 @@ export interface AuthInfo {
   /** Sign-in is on (a password or accounts). */
   required: boolean
   user: CurrentUser | null
-  /** Stardeck Cloud: people sign in with their email into their own workspace. */
+  /** Hosted mode: people sign in with their email into their own workspace. */
   hosted: boolean
   workspace: WorkspaceInfo | null
   signOut: () => void

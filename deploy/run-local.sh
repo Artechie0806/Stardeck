@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
-# Stardeck Cloud on this computer, as on the server (minus HTTPS): the website, the app and share
-# links behind Caddy, a hosted-mode backend with its own data (deploy/.local), and the public demo.
+# Hosted Stardeck on this computer, as on the server (minus HTTPS): the app and share links behind
+# Caddy, a hosted-mode backend with its own data (deploy/.local), and the public demo.
 # Your own dev setup (Vite on 5173, the backend on 8000) isn't touched.
 #
 #   deploy/run-local.sh          start; Ctrl+C stops everything
 #   deploy/run-local.sh stop     stop a copy that was started in the background
 #
 # The AI is whatever backend/.env points at (e.g. LM Studio). Ports and the test account can be
-# changed with SITE_PORT, APP_PORT, SHARE_PORT, API_PORT, LOCAL_EMAIL and LOCAL_PASSWORD.
+# changed with APP_PORT, SHARE_PORT, API_PORT, LOCAL_EMAIL and LOCAL_PASSWORD.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "$here")
 state_dir="$here/.local"
-SITE_PORT=${SITE_PORT:-4000}
 APP_PORT=${APP_PORT:-4001}
 SHARE_PORT=${SHARE_PORT:-4002}
 API_PORT=${API_PORT:-8001}
@@ -46,7 +45,6 @@ export STARDECK_HOSTED=true
 export STARDECK_DATA_DIR="$state_dir/data"
 export STARDECK_PUBLIC_URL="http://localhost:$APP_PORT"
 export STARDECK_SHARE_URL="http://localhost:$SHARE_PORT"
-export STARDECK_SITE_URL="http://localhost:$SITE_PORT"
 export STARDECK_OPERATOR_EMAILS="$LOCAL_EMAIL"
 export LOCAL_EMAIL LOCAL_PASSWORD
 cd "$repo/backend"
@@ -69,9 +67,8 @@ uv run --quiet stardeck-admin demo setup > /dev/null
 
 uv run --quiet uvicorn stardeck.main:app --port "$API_PORT" > "$state_dir/backend.log" 2>&1 &
 api=$!
-SCHEME=http BACKEND="127.0.0.1:$API_PORT" SITE_ROOT="$repo/site" APP_ROOT="$repo/frontend/dist" \
-  SITE_DOMAIN="localhost:$SITE_PORT" APP_DOMAIN="localhost:$APP_PORT" SHARE_DOMAIN="localhost:$SHARE_PORT" \
-  ACME_EMAIL=local@example.com CONTACT_EMAIL=hello@example.com OPERATOR_NAME="Stardeck (local)" OPERATOR_CITY="your city" \
+SCHEME=http BACKEND="127.0.0.1:$API_PORT" APP_ROOT="$repo/frontend/dist" \
+  APP_DOMAIN="localhost:$APP_PORT" SHARE_DOMAIN="localhost:$SHARE_PORT" ACME_EMAIL=local@example.com \
   XDG_DATA_HOME="$state_dir/caddy" XDG_CONFIG_HOME="$state_dir/caddy" \
   "$caddy" run --config "$here/Caddyfile" --adapter caddyfile > "$state_dir/caddy.log" 2>&1 &
 web=$!
@@ -95,10 +92,9 @@ done
 
 cat <<EOF
 
-Stardeck Cloud is running on this computer:
-  Website      http://localhost:$SITE_PORT
-  Live demo    http://localhost:$SITE_PORT/demo   (opens the share host, with the tour)
+Hosted Stardeck is running on this computer:
   App          http://localhost:$APP_PORT          sign in as $LOCAL_EMAIL / $LOCAL_PASSWORD
+  Live demo    http://localhost:$SHARE_PORT/demo   (with the tour)
   Share links  http://localhost:$SHARE_PORT
 
 Data: $state_dir/data. Logs: $state_dir/backend.log and caddy.log.
